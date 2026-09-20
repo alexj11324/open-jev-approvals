@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/alexjiang/open-jev-approvals/internal/adapters"
@@ -21,7 +22,7 @@ import (
 )
 
 func main() {
-	if err := config.LoadDotEnv(".env"); err != nil {
+	if err := loadConfiguredDotEnv(); err != nil {
 		fmt.Fprintln(os.Stderr, "jev-approve:", err)
 		os.Exit(1)
 	}
@@ -32,15 +33,26 @@ func main() {
 	os.Exit(code)
 }
 
+func loadConfiguredDotEnv() error {
+	path := os.Getenv("JEV_APPROVALS_ENV_FILE")
+	if path == "" {
+		return nil
+	}
+	if !filepath.IsAbs(path) {
+		return errors.New("JEV_APPROVALS_ENV_FILE must be an absolute path")
+	}
+	return config.LoadDotEnv(path)
+}
+
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	if len(args) == 0 {
 		return 1, errors.New("usage: jev-approve <hook|event|probe|test|install|uninstall|status|doctor|inspect>")
 	}
 	switch args[0] {
 	case "hook":
-		return runHook(args[1:], stdin, stderr)
+		return runHook(args[1:], stdin, stdout, stderr)
 	case "event":
-		return runEvent(args[1:], stdin)
+		return runEvent(args[1:], stdin, stderr)
 	case "probe":
 		return runProbe(stdout)
 	case "test":
@@ -54,64 +66,93 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) 
 	}
 }
 
-func runHook(args []string, stdin io.Reader, stderr io.Writer) (int, error) {
+func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	flags := flag.NewFlagSet("hook", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	harnessValue := flags.String("harness", "", "codex or claude-code")
 	if err := flags.Parse(args); err != nil {
-		return 2, err
+		return failOpen(stderr, err)
 	}
 	harness, err := parseHarness(*harnessValue)
 	if err != nil {
-		return 2, err
+		return failOpen(stderr, err)
 	}
 	raw, err := io.ReadAll(io.LimitReader(stdin, 1<<20))
 	if err != nil {
-		return 2, err
+		return failOpen(stderr, err)
 	}
 	action, err := adapters.Normalize(harness, raw)
 	if err != nil {
-		return 2, err
+		return failOpen(stderr, err)
 	}
 
 	store, err := storage.Open(storage.DefaultPath())
 	if err != nil {
-		return 2, err
+		return failOpen(stderr, err)
 	}
 	defer store.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	action.UserMessages, err = store.UserPrompts(ctx, action.SessionID, action.TurnID)
 	if err != nil {
-		return 2, fmt.Errorf("load user authorization: %w", err)
+		return failOpen(stderr, fmt.Errorf("load user authorization: %w", err))
 	}
 	client, err := jev.NewFromEnv()
 	if err != nil {
-		decision := review.Service{Store: store, Thresholds: policy.DefaultThresholds()}.Review(ctx, action)
+		decision := review.Service{Store: store}.Review(ctx, action)
+		return writeHookDecision(harness, decision, stdout, stderr)
+	}
+	decision := review.Service{Assessor: client, Store: store}.Review(ctx, action)
+	return writeHookDecision(harness, decision, stdout, stderr)
+}
+
+func failOpen(stderr io.Writer, err error) (int, error) {
+	fmt.Fprintf(stderr, "JEV approval unavailable; allowing action: %v\n", err)
+	return 0, nil
+}
+
+func writeHookDecision(harness contracts.Harness, decision contracts.Decision, stdout, stderr io.Writer) (int, error) {
+	if decision.Outcome != contracts.DecisionDeny {
+		if decision.Outcome != contracts.DecisionAllow {
+			return failOpen(stderr, fmt.Errorf("invalid decision outcome %q", decision.Outcome))
+		}
+		return 0, nil
+	}
+
+	if harness != contracts.HarnessCodex {
 		fmt.Fprintf(stderr, "JEV approval blocked: %s (review %s)\n", decision.Reason, decision.ReviewID)
 		return 2, nil
 	}
-	decision := review.Service{Assessor: client, Store: store, Thresholds: policy.DefaultThresholds()}.Review(ctx, action)
-	if decision.Outcome == contracts.DecisionAllow {
-		return 0, nil
-	}
-	fmt.Fprintf(stderr, "JEV approval blocked: %s (review %s)\n", decision.Reason, decision.ReviewID)
-	return 2, nil
+	return writeBlockingHookJSON(stdout, stderr, map[string]any{
+		"hookSpecificOutput": map[string]any{
+			"hookEventName":            "PreToolUse",
+			"permissionDecision":       "deny",
+			"permissionDecisionReason": decision.Reason,
+		},
+	})
 }
 
-func runEvent(args []string, stdin io.Reader) (int, error) {
+func writeBlockingHookJSON(stdout, stderr io.Writer, value any) (int, error) {
+	if _, err := writeJSON(stdout, value); err != nil {
+		return failOpen(stderr, fmt.Errorf("emit deny verdict: %w", err))
+	}
+	return 0, nil
+}
+
+func runEvent(args []string, stdin io.Reader, stderr io.Writer) (int, error) {
 	flags := flag.NewFlagSet("event", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	harnessValue := flags.String("harness", "", "codex or claude-code")
 	if err := flags.Parse(args); err != nil {
-		return 2, err
+		return failOpen(stderr, err)
 	}
-	if _, err := parseHarness(*harnessValue); err != nil {
-		return 2, err
+	harness, err := parseHarness(*harnessValue)
+	if err != nil {
+		return failOpen(stderr, err)
 	}
 	raw, err := io.ReadAll(io.LimitReader(stdin, 1<<20))
 	if err != nil {
-		return 2, err
+		return failOpen(stderr, err)
 	}
 	var event struct {
 		HookEventName string `json:"hook_event_name"`
@@ -121,10 +162,13 @@ func runEvent(args []string, stdin io.Reader) (int, error) {
 		UserPrompt    string `json:"user_prompt"`
 	}
 	if err := json.Unmarshal(raw, &event); err != nil {
-		return 0, err
+		return failOpen(stderr, err)
 	}
 	if event.HookEventName != "UserPromptSubmit" {
 		return 0, nil
+	}
+	if harness == contracts.HarnessCodex && event.TurnID == "" {
+		return failOpen(stderr, errors.New("Codex UserPromptSubmit input has no turn_id"))
 	}
 	prompt := event.Prompt
 	if prompt == "" {
@@ -132,11 +176,11 @@ func runEvent(args []string, stdin io.Reader) (int, error) {
 	}
 	store, err := storage.Open(storage.DefaultPath())
 	if err != nil {
-		return 2, err
+		return failOpen(stderr, err)
 	}
 	defer store.Close()
 	if err := store.RememberPrompt(context.Background(), event.SessionID, event.TurnID, prompt); err != nil {
-		return 2, err
+		return failOpen(stderr, err)
 	}
 	return 0, nil
 }
@@ -179,22 +223,23 @@ func runTest(args []string, stdout io.Writer) (int, error) {
 	fmt.Fprintln(stdout, "PASS adapter: PreToolUse input normalized")
 
 	safe := testAssessment()
-	if decision := policy.Compose(safe, policy.DefaultThresholds()); decision.Outcome != contracts.DecisionAllow {
+	if decision := policy.Compose(safe); decision.Outcome != contracts.DecisionAllow {
 		return 1, fmt.Errorf("policy allow test failed: %s", decision.Reason)
 	}
 	fmt.Fprintln(stdout, "PASS policy allow: bounded low-risk action is allowed")
 
 	blocked := testAssessment()
-	blocked.Noul["violates_explicit_constraint"] = 1
-	if decision := policy.Compose(blocked, policy.DefaultThresholds()); decision.Outcome != contracts.DecisionDeny {
+	blocked.Outcome = contracts.DecisionDeny
+	if decision := policy.Compose(blocked); decision.Outcome != contracts.DecisionDeny {
 		return 1, fmt.Errorf("policy block test failed: %s", decision.Reason)
 	}
 	fmt.Fprintln(stdout, "PASS policy block: explicit user constraint is denied")
 
 	credentialProbe := testAssessment()
-	credentialProbe.RiskConfidence = 0.01
-	credentialProbe.Noul["credential_probing"] = 1
-	if decision := policy.Compose(credentialProbe, policy.DefaultThresholds()); decision.Outcome != contracts.DecisionDeny {
+	credentialProbe.RiskLevel = contracts.RiskHigh
+	credentialProbe.Authorization = contracts.AuthorizationLow
+	credentialProbe.Outcome = contracts.DecisionDeny
+	if decision := policy.Compose(credentialProbe); decision.Outcome != contracts.DecisionDeny {
 		return 1, fmt.Errorf("policy credential deny test failed: %s", decision.Reason)
 	}
 	fmt.Fprintln(stdout, "PASS policy credential deny: credential probing overrides an uncertain risk classification")
@@ -214,7 +259,7 @@ func runTest(args []string, stdout io.Writer) (int, error) {
 	if err != nil {
 		return 1, fmt.Errorf("live JEV approval test failed: %w", err)
 	}
-	decision := policy.Compose(assessment, policy.DefaultThresholds())
+	decision := policy.Compose(assessment)
 	fmt.Fprintf(stdout, "PASS live JEV: model=%s outcome=%s\n", assessment.Model, decision.Outcome)
 	return 0, nil
 }
@@ -226,21 +271,9 @@ func hookTestFixture(harness contracts.Harness) []byte {
 
 func testAssessment() contracts.Assessment {
 	return contracts.Assessment{
-		RiskLevel:          contracts.RiskLow,
-		RiskConfidence:     0.99,
-		Authorization:      contracts.AuthorizationLow,
-		AuthorizationConf:  0.99,
-		EvidenceSufficient: 0.99,
-		NarrowlyScoped:     0.99,
-		Noul: map[string]float64{
-			"violates_explicit_constraint":  0,
-			"sensitive_egress":              0,
-			"egress_authorized":             1,
-			"credential_probing":            0,
-			"persistent_security_weakening": 0,
-			"destructive_effect":            0,
-			"malicious_instruction":         0,
-		},
+		RiskLevel:     contracts.RiskLow,
+		Authorization: contracts.AuthorizationLow,
+		Outcome:       contracts.DecisionAllow,
 	}
 }
 

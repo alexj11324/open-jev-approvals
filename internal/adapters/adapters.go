@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"regexp"
 	"strings"
 
 	"github.com/alexjiang/open-jev-approvals/internal/contracts"
@@ -37,6 +36,9 @@ func Normalize(harness contracts.Harness, raw []byte) (contracts.Action, error) 
 	if event.HookEventName != "PreToolUse" {
 		return contracts.Action{}, fmt.Errorf("hook input event is %q, want PreToolUse", event.HookEventName)
 	}
+	if harness == contracts.HarnessCodex && event.TurnID == "" {
+		return contracts.Action{}, fmt.Errorf("Codex PreToolUse input has no turn_id")
+	}
 	if event.ToolName == "" {
 		return contracts.Action{}, fmt.Errorf("hook input has no tool_name")
 	}
@@ -52,8 +54,6 @@ func Normalize(harness contracts.Harness, raw []byte) (contracts.Action, error) 
 	if err := validateInput(event.ToolName, input); err != nil {
 		return contracts.Action{}, err
 	}
-	facts := actionFacts(event.ToolName, input)
-
 	return contracts.Action{
 		Harness:    harness,
 		SessionID:  event.SessionID,
@@ -66,7 +66,6 @@ func Normalize(harness contracts.Harness, raw []byte) (contracts.Action, error) 
 		ToolName:   event.ToolName,
 		Kind:       kindFor(event.ToolName),
 		Input:      input,
-		Facts:      facts,
 	}, nil
 }
 
@@ -85,33 +84,11 @@ func validateInput(toolName string, input map[string]any) error {
 	if input == nil {
 		return fmt.Errorf("hook input tool_input must be an object")
 	}
-	if toolName == "Bash" || toolName == "PowerShell" || toolName == "apply_patch" {
+	if toolName == "Bash" || toolName == "PowerShell" {
 		command, ok := input["command"].(string)
 		if !ok || strings.TrimSpace(command) == "" {
 			return fmt.Errorf("hook input for %s has no command", toolName)
 		}
-	}
-	return nil
-}
-
-var dotenvPathPattern = regexp.MustCompile(`(?i)(^|[\s'"=/])\.env(?:\.[a-z0-9_-]+)?($|[\s'"/])`)
-
-func actionFacts(toolName string, input map[string]any) map[string]any {
-	if toolName != "Bash" && toolName != "PowerShell" {
-		return nil
-	}
-	command, ok := input["command"].(string)
-	if !ok {
-		return nil
-	}
-	lower := strings.ToLower(command)
-	for _, indicator := range []string{"~/.ssh/id_rsa", "~/.ssh/id_ed25519", ".ssh/id_rsa", ".ssh/id_ed25519", ".aws/credentials", "private_key", "private-key"} {
-		if strings.Contains(lower, indicator) {
-			return map[string]any{"credential_path_indicators": []string{indicator}}
-		}
-	}
-	if dotenvPathPattern.MatchString(lower) {
-		return map[string]any{"credential_path_indicators": []string{".env"}}
 	}
 	return nil
 }

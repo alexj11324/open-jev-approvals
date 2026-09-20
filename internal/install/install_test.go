@@ -46,3 +46,19 @@ func TestInstallIsIdempotentAndPreservesHarnessSettings(t *testing.T) {
 		t.Fatalf("installer changed harness settings: %#v", config)
 	}
 }
+
+func TestCheckRequiresEveryInstalledHook(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	binary := "/opt/jev-approve"
+	legacy := `{"hooks":{"PreToolUse":[{"hooks":[{"command":"/opt/jev-approve hook --harness codex"}]}]}}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status, err := Check(contracts.HarnessCodex, path, binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Installed {
+		t.Fatal("Check().Installed = true without UserPromptSubmit hook")
+	}
+}

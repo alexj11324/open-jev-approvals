@@ -70,7 +70,7 @@ func TestUserPromptsWithoutTurnIDUsesLatestTurn(t *testing.T) {
 }
 
 // TestUserPromptsEmptyTurnIDsUseNewestPromptOnly covers harnesses that never
-// send a turn id: every stored prompt has turn_id='', and without the
+// send a turn id: every stored prompt has an empty turn_id, and without the
 // newest-only rule authorization would accumulate across unrelated requests.
 func TestUserPromptsEmptyTurnIDsUseNewestPromptOnly(t *testing.T) {
 	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))

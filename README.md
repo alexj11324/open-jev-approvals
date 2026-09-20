@@ -30,12 +30,22 @@ bin/jev-approve test --harness codex
 
 # Also evaluates a complete approval state through the configured JEV API.
 bin/jev-approve test --harness codex --live
+
+# Runs real Codex CLI tool calls through the installed project hook.
+scripts/test-codex-hook.sh
 ```
 
 The test command never executes the tool payload it evaluates. A passing live
 test proves that JEV returned valid typed answers and that the local policy
 could compose them. It reports the observed outcome instead of treating an
 uncertain outcome as a false success.
+
+`scripts/test-codex-hook.sh` is the runtime acceptance test. It builds the
+binary, installs this repository's Codex hook, then runs one safe `touch` and
+one private-key copy request through `codex exec`. It requires an authenticated
+Codex CLI, a trusted project `.codex/` layer, and a configured `TYPESAFE_API_KEY`.
+The copy command must be denied before it executes; both targets are temporary
+paths under `/private/tmp`.
 
 ## Install a hook
 

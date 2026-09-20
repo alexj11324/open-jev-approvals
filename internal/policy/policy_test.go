@@ -46,12 +46,12 @@ func TestComposeDeniesCriticalAction(t *testing.T) {
 	}
 }
 
-func TestComposeDeniesUnsupportedRiskLevel(t *testing.T) {
+func TestComposeAllowsUnsupportedRiskLevel(t *testing.T) {
 	assessment := safeAssessment()
 	assessment.RiskLevel = contracts.RiskUnresolved
 	decision := Compose(assessment, DefaultThresholds())
-	if decision.Outcome != contracts.DecisionDeny {
-		t.Fatalf("Outcome = %q, want deny", decision.Outcome)
+	if decision.Outcome != contracts.DecisionAllow {
+		t.Fatalf("Outcome = %q, want allow", decision.Outcome)
 	}
 }
 
@@ -152,16 +152,38 @@ func TestComposeDeniesHighRiskThatIsNotNarrowlyScoped(t *testing.T) {
 	}
 }
 
-func TestComposeDeniesWhenRequiredNoulIsMissing(t *testing.T) {
+func TestComposeAllowsWhenRequiredNoulIsMissing(t *testing.T) {
 	assessment := safeAssessment()
 	delete(assessment.Noul, "malicious_instruction")
+	decision := Compose(assessment, DefaultThresholds())
+	if decision.Outcome != contracts.DecisionAllow || !decision.Incomplete {
+		t.Fatalf("Outcome = %q incomplete=%v, want incomplete allow; reason = %q", decision.Outcome, decision.Incomplete, decision.Reason)
+	}
+}
+
+// TestComposeDeniesConfirmedHazardInPartialVerdict proves positive evidence
+// outranks completeness: a tripping hazard noul denies even when another
+// required field is missing.
+func TestComposeDeniesConfirmedHazardInPartialVerdict(t *testing.T) {
+	assessment := safeAssessment()
+	assessment.Noul["malicious_instruction"] = 0.9
+	delete(assessment.Noul, "sensitive_egress")
 	decision := Compose(assessment, DefaultThresholds())
 	if decision.Outcome != contracts.DecisionDeny {
 		t.Fatalf("Outcome = %q, want deny; reason = %q", decision.Outcome, decision.Reason)
 	}
 }
 
-func TestComposeDeniesInvalidChoiceConfidence(t *testing.T) {
+// TestComposeDeniesCriticalInPartialVerdict proves a critical risk level
+// denies even when no noul judgments arrived at all.
+func TestComposeDeniesCriticalInPartialVerdict(t *testing.T) {
+	assessment := contracts.Assessment{RiskLevel: contracts.RiskCritical}
+	if decision := Compose(assessment, DefaultThresholds()); decision.Outcome != contracts.DecisionDeny {
+		t.Fatalf("Outcome = %q, want deny", decision.Outcome)
+	}
+}
+
+func TestComposeAllowsInvalidChoiceConfidence(t *testing.T) {
 	for name, mutate := range map[string]func(*contracts.Assessment){
 		"nan risk confidence":          func(a *contracts.Assessment) { a.RiskConfidence = math.NaN() },
 		"out-of-range risk confidence": func(a *contracts.Assessment) { a.RiskConfidence = 1.5 },
@@ -170,8 +192,8 @@ func TestComposeDeniesInvalidChoiceConfidence(t *testing.T) {
 		assessment := safeAssessment()
 		mutate(&assessment)
 		decision := Compose(assessment, DefaultThresholds())
-		if decision.Outcome != contracts.DecisionDeny {
-			t.Fatalf("%s: Outcome = %q, want deny; reason = %q", name, decision.Outcome, decision.Reason)
+		if decision.Outcome != contracts.DecisionAllow {
+			t.Fatalf("%s: Outcome = %q, want allow; reason = %q", name, decision.Outcome, decision.Reason)
 		}
 	}
 }

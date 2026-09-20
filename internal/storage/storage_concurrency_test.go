@@ -15,7 +15,7 @@ import (
 // the same database file — the shape of concurrent hook invocations racing the
 // audit log — and hammers both with prompt and decision writes. WAL plus the
 // busy_timeout pragma must absorb the writer contention: any SQLITE_BUSY or
-// "database is locked" error is a fail-closed outage, so the test demands zero.
+// "database is locked" error degrades the review path, so the test demands zero.
 func TestConcurrentStoresShareOneDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 

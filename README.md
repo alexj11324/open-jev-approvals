@@ -95,8 +95,8 @@ key, an unreachable endpoint, and a fake `id_rsa` inside the temp dir, and
 asserts that denied actions leave no filesystem side effects and that every
 decision is audited against its `tool_use_id`. With `RUN_LIVE=1` and a real
 `TYPESAFE_API_KEY` it additionally runs `codex exec` end to end and requires
-live `allow` verdicts; without it the run is offline and asserts the
-fail-closed denies.
+live `allow`/`deny` verdicts; without it the run is offline and asserts
+fail-open degradation.
 
 ## Install a hook
 
@@ -129,18 +129,22 @@ destructive-effect, untrusted-instruction, and scope questions. The local
 `codex-guardian-v1` policy (`internal/policy`, mirrored by
 `policy/codex-guardian-v1/policy.json`) owns the outcome:
 
-- Outcomes are binary: `allow` or `deny`. Invalid model output, missing or
-  invalid safety judgments, service failure, unverifiable authorization
-  freshness, and audit failure all deny. No decision is delegated to Codex
-  user approval, Guardian, or auto review.
+- Outcomes are binary: `allow` or `deny`. Deny requires positive evidence —
+  this gate *is* the harness's auto mode, so reviewer failure (unavailable
+  JEV, invalid or incomplete verdict, unverifiable authorization freshness,
+  unavailable audit store) degrades to `allow`, recorded with
+  `incomplete: true`, rather than stalling the user's work. No decision is
+  delegated to Codex user approval, Guardian, or auto review.
 - Confirmed (`>= 0.70`) explicit-constraint violations, malicious
   instructions, unauthorized persistent security weakening, and sensitive
-  egress without authorization deny. Critical risk always denies.
+  egress without authorization deny — even inside a partial verdict.
+  Critical risk always denies.
 - Confirmed credential probing or destructive effect escalates effective
   risk to `high`. High risk requires at least `medium` user authorization
   and a narrowly-scoped (`>= 0.70`) action.
 - A hazard judgment below the threshold — including an uncertain `0.5` —
-  does not by itself deny; only missing or invalid judgments fail closed.
+  does not by itself deny; a verdict that is missing or invalid entirely
+  fails open.
 - Choice confidences must be valid probabilities, but their values are not
   deny inputs — harmless low/medium ambiguity does not become a false block.
 - A confirmed Codex `PreToolUse` denial returns the upstream

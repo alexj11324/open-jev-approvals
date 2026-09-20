@@ -144,7 +144,7 @@ func TestReviewDeniesWhenAuthorizationMovesMidReview(t *testing.T) {
 	}
 }
 
-func TestReviewDeniesWhenScopeMissing(t *testing.T) {
+func TestReviewAllowsWhenScopeMissing(t *testing.T) {
 	store := openStore(t)
 	service := Service{
 		Assessor: fakeAssessor{assess: func(context.Context, contracts.Action) (contracts.Assessment, error) {
@@ -160,15 +160,15 @@ func TestReviewDeniesWhenScopeMissing(t *testing.T) {
 		ToolName:  "bash",
 		Kind:      contracts.ActionShell,
 	})
-	if decision.Outcome != contracts.DecisionDeny {
-		t.Fatalf("Review outcome = %q, want deny", decision.Outcome)
+	if decision.Outcome != contracts.DecisionAllow {
+		t.Fatalf("Review outcome = %q, want allow", decision.Outcome)
 	}
 	if !decision.Incomplete {
 		t.Fatal("scope-less review must be marked incomplete")
 	}
 }
 
-func TestReviewDeniesWhenAuditStoreMissing(t *testing.T) {
+func TestReviewAllowsWhenAuditStoreMissing(t *testing.T) {
 	service := Service{
 		Assessor: fakeAssessor{assess: func(context.Context, contracts.Action) (contracts.Assessment, error) {
 			return cleanAssessment(), nil
@@ -177,8 +177,6 @@ func TestReviewDeniesWhenAuditStoreMissing(t *testing.T) {
 		Thresholds: policy.DefaultThresholds(),
 	}
 
-	// A scoped action exercises the freshness check against the nil store:
-	// the gate must collapse to deny instead of panicking.
 	decision := service.Review(context.Background(), contracts.Action{
 		Harness:   contracts.HarnessCodex,
 		SessionID: "s1",
@@ -186,15 +184,36 @@ func TestReviewDeniesWhenAuditStoreMissing(t *testing.T) {
 		Kind:      contracts.ActionShell,
 		Scope:     storage.ScopeKey("inst", contracts.HarnessCodex, "s1", ""),
 	})
-	if decision.Outcome != contracts.DecisionDeny {
-		t.Fatalf("Review outcome = %q, want deny", decision.Outcome)
+	if decision.Outcome != contracts.DecisionAllow {
+		t.Fatalf("Review outcome = %q, want allow", decision.Outcome)
 	}
 	if !strings.Contains(decision.Reason, "audit store") {
-		t.Fatalf("deny reason %q does not mention the audit store", decision.Reason)
+		t.Fatalf("allow reason %q does not mention the audit store", decision.Reason)
 	}
 }
 
-func TestReviewDeniesWhenAssessorMissing(t *testing.T) {
+// TestReviewDenySurvivesAuditStoreFailure proves a positive-evidence deny
+// is not upgraded to allow when the audit trail cannot be recorded.
+func TestReviewDenySurvivesAuditStoreFailure(t *testing.T) {
+	service := Service{
+		Assessor: fakeAssessor{assess: func(context.Context, contracts.Action) (contracts.Assessment, error) {
+			assessment := cleanAssessment()
+			assessment.RiskLevel = contracts.RiskCritical
+			return assessment, nil
+		}},
+		Store:      nil,
+		Thresholds: policy.DefaultThresholds(),
+	}
+
+	decision := service.Review(context.Background(), contracts.Action{
+		Harness: contracts.HarnessCodex, SessionID: "s1", ToolName: "bash", Kind: contracts.ActionShell,
+	})
+	if decision.Outcome != contracts.DecisionDeny {
+		t.Fatalf("Review outcome = %q, want deny", decision.Outcome)
+	}
+}
+
+func TestReviewAllowsWhenAssessorMissing(t *testing.T) {
 	store := openStore(t)
 	service := Service{
 		Assessor:   nil,
@@ -209,7 +228,32 @@ func TestReviewDeniesWhenAssessorMissing(t *testing.T) {
 		Kind:      contracts.ActionShell,
 		Scope:     storage.ScopeKey("inst", contracts.HarnessCodex, "s1", ""),
 	})
-	if decision.Outcome != contracts.DecisionDeny {
-		t.Fatalf("Review outcome = %q, want deny", decision.Outcome)
+	if decision.Outcome != contracts.DecisionAllow {
+		t.Fatalf("Review outcome = %q, want allow", decision.Outcome)
+	}
+	if !decision.Incomplete {
+		t.Fatal("assessor-less review must be marked incomplete")
+	}
+}
+
+func TestReviewAllowsWhenAssessorFails(t *testing.T) {
+	store := openStore(t)
+	service := Service{
+		Assessor: fakeAssessor{assess: func(context.Context, contracts.Action) (contracts.Assessment, error) {
+			return contracts.Assessment{}, context.DeadlineExceeded
+		}},
+		Store:      store,
+		Thresholds: policy.DefaultThresholds(),
+	}
+
+	decision := service.Review(context.Background(), contracts.Action{
+		Harness:   contracts.HarnessCodex,
+		SessionID: "s1",
+		ToolName:  "bash",
+		Kind:      contracts.ActionShell,
+		Scope:     storage.ScopeKey("inst", contracts.HarnessCodex, "s1", ""),
+	})
+	if decision.Outcome != contracts.DecisionAllow || !decision.Incomplete {
+		t.Fatalf("Review outcome = %q incomplete=%v, want incomplete allow", decision.Outcome, decision.Incomplete)
 	}
 }

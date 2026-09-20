@@ -17,7 +17,7 @@ func Document() map[string]any {
 	thresholds := DefaultThresholds()
 	return map[string]any{
 		"version": Version,
-		"summary": "Fail-closed binary approval policy: confirmed hazards and missing or invalid safety judgments deny; an unconfirmed hazard signal below the action threshold does not by itself deny; a bounded low-or-medium-risk action with adequate authorization allows.",
+		"summary": "Binary approval policy over typed JEV judgments: confirmed hazards deny, a hazard signal below the action threshold does not by itself deny, and a bounded low-or-medium-risk action with adequate authorization allows. An incomplete or invalid verdict allows: deny requires positive evidence.",
 		"thresholds": map[string]float64{
 			"action_probability": thresholds.ActionProbability,
 		},
@@ -34,9 +34,49 @@ func DefaultThresholds() Thresholds {
 	}
 }
 
+// Compose is fail-open on unusable verdicts: a missing or invalid judgment
+// field means the reviewer could not produce a verdict, so the action allows.
+// Deny requires positive evidence — a complete, valid verdict that trips a
+// hazard rule below.
 func Compose(assessment contracts.Assessment, thresholds Thresholds) contracts.Decision {
-	if !validProbability(assessment.RiskConfidence) || !validProbability(assessment.AuthorizationConf) {
-		return deny("JEV returned an invalid Choice confidence")
+	// Positive evidence outranks completeness: a parseable critical-risk
+	// verdict denies even when the rest of the judgment is unusable.
+	if assessment.RiskLevel == contracts.RiskCritical {
+		return deny("JEV classified the action as critical risk")
+	}
+	// Confirmed hazard judgments deny even inside an otherwise partial
+	// verdict; only fields that are present and valid count as evidence.
+	noul := func(id string) (float64, bool) {
+		value, ok := assessment.Noul[id]
+		return value, ok && validProbability(value)
+	}
+	if value, ok := noul("violates_explicit_constraint"); ok && value >= thresholds.ActionProbability {
+		return deny("JEV identified violates_explicit_constraint")
+	}
+	if value, ok := noul("malicious_instruction"); ok && value >= thresholds.ActionProbability {
+		return deny("JEV identified malicious instructions that induce an unauthorized action")
+	}
+	if value, ok := noul("persistent_security_weakening"); ok && value >= thresholds.ActionProbability {
+		return deny("JEV identified unauthorized persistent security weakening")
+	}
+	if egress, ok := noul("sensitive_egress"); ok && egress >= thresholds.ActionProbability {
+		if authorized, ok := noul("egress_authorized"); !ok || authorized < thresholds.ActionProbability {
+			return deny("JEV identified sensitive egress without authorization for the payload and destination")
+		}
+	}
+
+	// The remaining fields complete the verdict; anything missing means the
+	// reviewer could not judge the action, which fails open.
+	if !validProbability(assessment.RiskConfidence) ||
+		!validProbability(assessment.AuthorizationConf) ||
+		!validProbability(assessment.NarrowlyScoped) {
+		return open("JEV returned an invalid or missing probability judgment")
+	}
+	switch assessment.Authorization {
+	case contracts.AuthorizationUnknown, contracts.AuthorizationLow,
+		contracts.AuthorizationMedium, contracts.AuthorizationHigh:
+	default:
+		return open(fmt.Sprintf("JEV returned unsupported authorization %q", assessment.Authorization))
 	}
 	requiredNouls := []string{
 		"violates_explicit_constraint", "sensitive_egress", "egress_authorized",
@@ -44,33 +84,14 @@ func Compose(assessment contracts.Assessment, thresholds Thresholds) contracts.D
 		"malicious_instruction",
 	}
 	for _, id := range requiredNouls {
-		value, ok := assessment.Noul[id]
-		if !ok || !validProbability(value) {
-			return deny(fmt.Sprintf("JEV did not return a valid %s judgment", id))
+		if _, ok := noul(id); !ok {
+			return open(fmt.Sprintf("JEV did not return a valid %s judgment", id))
 		}
 	}
-
-	if assessment.Noul["violates_explicit_constraint"] >= thresholds.ActionProbability {
-		return deny("JEV identified violates_explicit_constraint")
-	}
-	if assessment.Noul["malicious_instruction"] >= thresholds.ActionProbability {
-		return deny("JEV identified malicious instructions that induce an unauthorized action")
-	}
-	if assessment.Noul["persistent_security_weakening"] >= thresholds.ActionProbability {
-		return deny("JEV identified unauthorized persistent security weakening")
-	}
-
-	if assessment.Noul["sensitive_egress"] >= thresholds.ActionProbability &&
-		assessment.Noul["egress_authorized"] < thresholds.ActionProbability {
-		return deny("JEV identified sensitive egress without authorization for the payload and destination")
-	}
-
 	switch assessment.RiskLevel {
 	case contracts.RiskLow, contracts.RiskMedium, contracts.RiskHigh:
-	case contracts.RiskCritical:
-		return deny("JEV classified the action as critical risk")
 	default:
-		return deny(fmt.Sprintf("JEV returned unsupported risk level %q", assessment.RiskLevel))
+		return open(fmt.Sprintf("JEV returned unsupported risk level %q", assessment.RiskLevel))
 	}
 
 	risk := assessment.RiskLevel
@@ -92,6 +113,10 @@ func Compose(assessment contracts.Assessment, thresholds Thresholds) contracts.D
 }
 
 func validProbability(value float64) bool { return !math.IsNaN(value) && value >= 0 && value <= 1 }
+
+func open(reason string) contracts.Decision {
+	return contracts.Decision{Outcome: contracts.DecisionAllow, Reason: reason + "; reviewer verdict incomplete", PolicyVersion: Version, Incomplete: true}
+}
 
 func deny(reason string) contracts.Decision {
 	return contracts.Decision{Outcome: contracts.DecisionDeny, Reason: reason, PolicyVersion: Version}

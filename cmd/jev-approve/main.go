@@ -24,11 +24,11 @@ import (
 func main() {
 	if err := config.LoadUserEnv(); err != nil {
 		fmt.Fprintln(os.Stderr, "jev-approve:", err)
-		// In hook paths a startup failure must still block the action.
-		if len(os.Args) > 1 && (os.Args[1] == "hook" || os.Args[1] == "event") {
-			os.Exit(2)
+		// On interception paths a broken environment degrades to allow —
+		// the reviewer is unavailable, not a reason to stall the action.
+		if len(os.Args) <= 1 || (os.Args[1] != "hook" && os.Args[1] != "event") {
+			os.Exit(1)
 		}
-		os.Exit(1)
 	}
 	code, err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	if err != nil {
@@ -59,9 +59,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) 
 	}
 }
 
-// blocking maps a hook/event result to the fail-closed exit code: any error
-// on an interception path exits 2 so a half-handled action can never read
-// as an allow.
+// blocking maps a hook/event result to the harness exit code. Errors are
+// already rare here — every recoverable failure degrades to allow inside
+// runHook/runEvent — so a remaining error means even the verdict could not
+// be emitted, which stays blocking rather than silently allowing.
 func blocking(code int, err error) (int, error) {
 	if err != nil {
 		return 2, err
@@ -81,34 +82,53 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, err
 	flags.SetOutput(io.Discard)
 	harnessValue := flags.String("harness", "", "codex or claude-code")
 	if err := flags.Parse(args); err != nil {
-		return 2, err
+		fmt.Fprintf(stderr, "jev-approve: %v; reviewer unavailable\n", err)
+		return 0, nil
 	}
 	harness, err := parseHarness(*harnessValue)
 	if err != nil {
-		return 2, err
+		fmt.Fprintf(stderr, "jev-approve: %v; reviewer unavailable\n", err)
+		return 0, nil
 	}
 	raw, err := io.ReadAll(io.LimitReader(stdin, 1<<20))
 	if err != nil {
-		return 2, err
+		fmt.Fprintf(stderr, "jev-approve: read hook input: %v; reviewer unavailable\n", err)
+		return 0, nil
 	}
 	action, err := adapters.Normalize(harness, raw)
 	if err != nil {
-		return 2, err
+		// A PermissionRequest payload that cannot be parsed still needs an
+		// explicit Codex verdict; anything else fails open silently.
+		if harness == contracts.HarnessCodex && strings.Contains(string(raw), `"PermissionRequest"`) {
+			return writeRequiredHookJSON(stdout, stderr, map[string]any{
+				"hookSpecificOutput": map[string]any{
+					"hookEventName": string(contracts.HookPermissionRequest),
+					"decision":      map[string]any{"behavior": "allow"},
+				},
+			})
+		}
+		fmt.Fprintf(stderr, "jev-approve: parse hook input: %v; reviewer unavailable\n", err)
+		return 0, nil
 	}
 
-	store, err := storage.Open(storage.DefaultPath())
-	if err != nil {
-		return 2, err
-	}
-	defer store.Close()
-	installationID, err := store.InstallationID(ctx)
-	if err != nil {
-		return 2, fmt.Errorf("resolve installation id: %w", err)
-	}
-	action.Scope = storage.ScopeKey(installationID, harness, action.SessionID, action.AgentID)
-	action.UserMessages, action.AuthorizationVersion, err = store.UserPrompts(ctx, action.Scope, action.TurnID)
-	if err != nil {
-		return 2, fmt.Errorf("load user authorization: %w", err)
+	// Degraded reviewer paths still funnel through Review: a verdict that
+	// positively denies must deny even when the audit store is gone.
+	var store *storage.Store
+	if s, err := storage.Open(storage.DefaultPath()); err == nil {
+		store = s
+		defer store.Close()
+		if installationID, err := store.InstallationID(ctx); err == nil {
+			action.Scope = storage.ScopeKey(installationID, harness, action.SessionID, action.AgentID)
+			if messages, version, err := store.UserPrompts(ctx, action.Scope, action.TurnID); err == nil {
+				action.UserMessages, action.AuthorizationVersion = messages, version
+			} else {
+				fmt.Fprintf(stderr, "jev-approve: load user authorization: %v; reviewer degraded\n", err)
+			}
+		} else {
+			fmt.Fprintf(stderr, "jev-approve: resolve installation id: %v; reviewer degraded\n", err)
+		}
+	} else {
+		fmt.Fprintf(stderr, "jev-approve: open audit store: %v; reviewer degraded\n", err)
 	}
 	client, err := jev.NewFromEnv()
 	if err != nil {
@@ -174,15 +194,15 @@ func runEvent(args []string, stdin io.Reader) (int, error) {
 	flags.SetOutput(io.Discard)
 	harnessValue := flags.String("harness", "", "codex or claude-code")
 	if err := flags.Parse(args); err != nil {
-		return 2, err
+		return 0, nil
 	}
 	harness, err := parseHarness(*harnessValue)
 	if err != nil {
-		return 2, err
+		return 0, nil
 	}
 	raw, err := io.ReadAll(io.LimitReader(stdin, 1<<20))
 	if err != nil {
-		return 2, err
+		return 0, nil
 	}
 	var event struct {
 		HookEventName string `json:"hook_event_name"`
@@ -193,7 +213,7 @@ func runEvent(args []string, stdin io.Reader) (int, error) {
 		UserPrompt    string `json:"user_prompt"`
 	}
 	if err := json.Unmarshal(raw, &event); err != nil {
-		return 2, err
+		return 0, nil
 	}
 	if event.HookEventName != "UserPromptSubmit" {
 		return 0, nil
@@ -204,16 +224,16 @@ func runEvent(args []string, stdin io.Reader) (int, error) {
 	}
 	store, err := storage.Open(storage.DefaultPath())
 	if err != nil {
-		return 2, err
+		return 0, nil
 	}
 	defer store.Close()
 	installationID, err := store.InstallationID(ctx)
 	if err != nil {
-		return 2, fmt.Errorf("resolve installation id: %w", err)
+		return 0, nil
 	}
 	scope := storage.ScopeKey(installationID, harness, event.SessionID, event.AgentID)
 	if err := store.RememberPrompt(ctx, scope, event.SessionID, event.TurnID, prompt); err != nil {
-		return 2, err
+		return 0, nil
 	}
 	return 0, nil
 }

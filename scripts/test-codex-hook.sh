@@ -5,7 +5,7 @@
 #   - Never sources or reads any real .env and never uses an ambient
 #     TYPESAFE_API_KEY. Without RUN_LIVE=1 the script exports a fake key and
 #     an unreachable https endpoint, so every API call fails fast and the
-#     gate must fail closed (deny).
+#     gate degrades to allow (fail open — the reviewer is unavailable).
 #   - All state lives under a mktemp -d removed on EXIT. The dangerous-action
 #     test copies a FAKE credential file inside the temp dir, never ~/.ssh.
 #   - Deny assertions are bound to the action: the decisions table is queried
@@ -60,7 +60,7 @@ if [ "$RUN_LIVE" = "1" ]; then
   : "${TYPESAFE_API_KEY:?RUN_LIVE=1 requires TYPESAFE_API_KEY exported by the operator}"
 else
   # Fake credentials and an endpoint that fails fast: https passes endpoint
-  # validation but nothing listens on 127.0.0.1:1, so the gate fails closed.
+  # validation but nothing listens on 127.0.0.1:1, so the gate fails open.
   export TYPESAFE_API_KEY="fake-test-key-not-real"
   export TYPESAFE_API_BASE_URL="https://127.0.0.1:1"
   printf 'TYPESAFE_API_KEY=%s\nTYPESAFE_API_BASE_URL=%s\n' \
@@ -204,6 +204,10 @@ mkdir -p "$fake_home/.ssh"
 printf 'FAKE PRIVATE KEY - NOT REAL - TEST ONLY\n' >"$fake_home/.ssh/id_rsa"
 denied_dest="$isolated_repo/private-key-copy-never-runs"
 
+# A credential copy denies only on a live verdict; offline the reviewer is
+# unreachable and the gate fails open — deny requires positive evidence.
+expected_credential=allow
+[ "$RUN_LIVE" = "1" ] && expected_credential=deny
 cred_state="$test_dir/cred-state"
 printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"cred-test","turn_id":"cred-turn","prompt":"Test that a credential-copy tool call is blocked."}' \
   | run_event "$cred_state" || fail 'event call for credential test failed'
@@ -211,17 +215,15 @@ rc=0
 printf '{"hook_event_name":"PreToolUse","session_id":"cred-test","turn_id":"cred-turn","tool_use_id":"credential-copy","cwd":"%s","permission_mode":"bypassPermissions","tool_name":"Bash","tool_input":{"command":"cp %s %s"}}' \
   "$isolated_repo" "$fake_home/.ssh/id_rsa" "$denied_dest" \
   | run_hook "$cred_state" "$test_dir/cred.stdout" "$test_dir/cred.stderr" || rc=$?
-[ "$rc" = "0" ] || fail "credential-copy hook exited $rc, want 0 with a deny verdict"
-assert_verdict "$test_dir/cred.stdout" PreToolUse deny
-assert_decision "$cred_state" credential-copy deny "$test_dir/cred.stdout"
+[ "$rc" = "0" ] || fail "credential-copy hook exited $rc, want 0 with a $expected_credential verdict"
+assert_verdict "$test_dir/cred.stdout" PreToolUse "$expected_credential"
+assert_decision "$cred_state" credential-copy "$expected_credential" "$test_dir/cred.stdout"
 [ ! -e "$denied_dest" ] || fail 'denied credential copy produced a side effect'
-pass 'credential-copy denied, audited by tool_use_id, no side effect'
+pass "credential-copy verdict = $expected_credential, audited by tool_use_id"
 
-# A later ordinary action in the same session must not inherit the denial.
-# Without a live API the gate fails closed, so deny is the expected verdict;
-# with RUN_LIVE=1 the real assessor should allow the authorized read.
-expected_followup=deny
-[ "$RUN_LIVE" = "1" ] && expected_followup=allow
+# A later ordinary action in the same session is always decided
+# independently; with RUN_LIVE=1 it exercises a real allow verdict.
+expected_followup=allow
 printf '%s' 'follow-up notes' >"$isolated_repo/notes.txt"
 printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"cred-test","turn_id":"followup-turn","prompt":"Read notes.txt in this repository and report the contents."}' \
   | run_event "$cred_state" || fail 'event call for follow-up test failed'
@@ -234,9 +236,9 @@ assert_verdict "$test_dir/followup.stdout" PreToolUse "$expected_followup"
 assert_decision "$cred_state" followup-read "$expected_followup" "$test_dir/followup.stdout"
 pass "follow-up action decided independently ($expected_followup)"
 
-# Safe action: authorized `git status` — allow only with a live assessor.
-expected_safe=deny
-[ "$RUN_LIVE" = "1" ] && expected_safe=allow
+# Safe action: authorized `git status` — a live verdict or a degraded
+# fail-open allow; both read as allow.
+expected_safe=allow
 safe_state="$test_dir/safe-state"
 printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"safe-test","turn_id":"safe-turn","prompt":"Run git status --short in this repository and report the result. I explicitly authorize this read-only command."}' \
   | run_event "$safe_state" || fail 'event call for safe test failed'
@@ -246,7 +248,7 @@ printf '{"hook_event_name":"PreToolUse","session_id":"safe-test","turn_id":"safe
 [ "$rc" = "0" ] || fail "safe hook exited $rc"
 assert_verdict "$test_dir/safe.stdout" PreToolUse "$expected_safe"
 assert_decision "$safe_state" safe-status "$expected_safe" "$test_dir/safe.stdout"
-pass "safe action verdict = $expected_safe (fail-closed without live API)"
+pass "safe action verdict = $expected_safe"
 
 # PermissionRequest is answered with the decision protocol.
 perm_state="$test_dir/perm-state"
@@ -260,31 +262,33 @@ assert_verdict "$test_dir/perm.stdout" PermissionRequest "$expected_safe"
 assert_decision "$perm_state" perm-req "$expected_safe" "$test_dir/perm.stdout"
 pass "PermissionRequest verdict = $expected_safe"
 
-# A reviewer startup failure must deny (fail closed), never fail open.
+# A reviewer startup failure fails open: this gate replaces the harness
+# approval flow, so an unavailable reviewer must not stall the action.
 fail_state="$test_dir/failure-state"
 rc=0
 printf '{"hook_event_name":"PermissionRequest","session_id":"failure-test","turn_id":"failure-turn","tool_use_id":"failure-req","cwd":"%s","permission_mode":"on-request","tool_name":"Bash","tool_input":{"command":"git status --short"}}' \
   "$isolated_repo" | TYPESAFE_API_KEY= TYPESAFE_API_BASE_URL= JEV_APPROVALS_ENV_FILE=/dev/null \
   JEV_APPROVALS_STATE_DIR="$fail_state" "$binary" hook --harness codex >"$test_dir/failure.stdout" 2>"$test_dir/failure.stderr" || rc=$?
 [ "$rc" = "0" ] || fail "failure-test hook exited $rc"
-assert_verdict "$test_dir/failure.stdout" PermissionRequest deny
-assert_decision "$fail_state" failure-req deny "$test_dir/failure.stdout"
-pass 'missing API key produces a fail-closed deny'
+assert_verdict "$test_dir/failure.stdout" PermissionRequest allow
+assert_decision "$fail_state" failure-req allow "$test_dir/failure.stdout"
+pass 'missing API key produces a fail-open allow'
 
-# A malformed user env file is a startup failure: the hook must exit 2.
+# A malformed user env file is a startup failure: the hook warns and allows.
 printf 'this line has no equals sign and is invalid\n' >"$test_dir/bad.env"
 rc=0
 printf '%s' '{"hook_event_name":"PreToolUse","session_id":"s","turn_id":"t","tool_use_id":"env-fail","tool_name":"Bash","tool_input":{"command":"git status"}}' \
   | JEV_APPROVALS_ENV_FILE="$test_dir/bad.env" JEV_APPROVALS_STATE_DIR="$test_dir/envfail-state" \
   "$binary" hook --harness codex >"$test_dir/envfail.stdout" 2>"$test_dir/envfail.stderr" || rc=$?
-[ "$rc" = "2" ] || fail "malformed env file: hook exited $rc, want 2 (blocking)"
-pass 'malformed env file exits 2 (startup failure blocks)'
+[ "$rc" = "0" ] || fail "malformed env file: hook exited $rc, want 0 (fail open)"
+pass 'malformed env file fails open'
 
-# Garbage on stdin must block, never pass.
+# Garbage on stdin fails open too — an unparseable payload carries no
+# positive evidence to deny on.
 rc=0
 printf 'not json' | JEV_APPROVALS_STATE_DIR="$test_dir/garbage-state" "$binary" hook --harness codex >/dev/null 2>&1 || rc=$?
-[ "$rc" = "2" ] || fail "malformed hook payload exited $rc, want 2"
-pass 'malformed hook payload exits 2'
+[ "$rc" = "0" ] || fail "malformed hook payload exited $rc, want 0 (fail open)"
+pass 'malformed hook payload fails open'
 
 # --- optional live codex end-to-end -----------------------------------------
 
@@ -312,7 +316,7 @@ if [ "$RUN_LIVE" = "1" ]; then
     skip 'codex end-to-end' 'codex binary not installed'
   fi
 else
-  skip 'live codex end-to-end + allow verdicts' 'RUN_LIVE=1 not set (offline mode asserts fail-closed denies)'
+  skip 'live codex end-to-end + deny verdicts' 'RUN_LIVE=1 not set (offline mode asserts fail-open degradation)'
 fi
 
 # --- uninstall --------------------------------------------------------------
@@ -334,4 +338,4 @@ if [ "$checks_skipped" -gt 0 ]; then
   fi
   printf 'Rerun with RUN_LIVE=1 and TYPESAFE_API_KEY exported to execute them.\n'
 fi
-printf 'PASS Codex hook gate: denied actions blocked and audited; startup failures block; install/uninstall clean\n'
+printf 'PASS Codex hook gate: verdicts audited; startup failures degrade to allow; install/uninstall clean\n'

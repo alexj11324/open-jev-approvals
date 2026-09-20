@@ -86,7 +86,7 @@ go run ./eval
 API key、不可达端点和临时目录里的假 `id_rsa`，并断言被拒绝的动作没有
 文件系统副作用、每条决策都按 `tool_use_id` 审计。设置 `RUN_LIVE=1` 并
 提供真实 `TYPESAFE_API_KEY` 时，它还会用 `codex exec` 端到端运行并要求
-live `allow` 判定；不设置则离线运行并断言 fail-closed 的拒绝。
+live `allow`/`deny` 判定；不设置则离线运行并断言 fail-open 降级放行。
 
 ## 安装 hook
 
@@ -116,15 +116,18 @@ Hooks 按**项目**安装：安装器编辑 `<project>/.codex/hooks.json`（Code
 不可信指令和范围问题。本地 `codex-guardian-v1` 政策（`internal/policy`，
 由 `policy/codex-guardian-v1/policy.json` 镜像）决定结果：
 
-- 结果是二元的：`allow` 或 `deny`。无效模型输出、缺失或非法的安全
-  判断、服务故障、无法验证授权新鲜度、审计失败——全部拒绝。没有任何
-  决策会下放给 Codex 用户审批、Guardian 或自动评审。
+- 结果是二元的：`allow` 或 `deny`。deny 需要正面证据——这个门**就是**
+  harness 的 auto mode，所以审查层故障（JEV 不可达、裁决无效或不完整、
+  授权新鲜度无法验证、审计库不可用）一律降级为 `allow`（记录
+  `incomplete: true`），而不是卡住用户的工作。没有任何决策会下放给
+  Codex 用户审批、Guardian 或自动评审。
 - 确认的（`>= 0.70`）显式约束违反、恶意指令、未授权持久安全削弱、
-  未授权敏感外发——拒绝。critical 风险一律拒绝。
+  未授权敏感外发——拒绝，即使出现在不完整的部分裁决中。critical 风险
+  一律拒绝。
 - 确认的凭据探取或破坏性效果会把有效风险升级到 `high`。`high` 风险
   要求至少 `medium` 用户授权且动作范围狭窄（`>= 0.70`）。
-- 低于阈值的危害判断——包括不确定的 `0.5`——本身不会拒绝；只有
-  缺失或非法的判断才 fail closed。
+- 低于阈值的危害判断——包括不确定的 `0.5`——本身不会拒绝；整体缺失
+  或非法的裁决则 fail open。
 - Choice 置信度必须是合法概率，但其数值不是拒绝依据——无害的
   低/中歧义不会变成误拦。
 - 确认的 Codex `PreToolUse` 拒绝返回上游 `permissionDecision: deny`

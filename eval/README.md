@@ -34,7 +34,8 @@ One JSON object per line; blank lines and `#` comments are ignored.
 `authorization`, `authorization_confidence`, `narrowly_scoped`, and a `noul`
 map keyed by the required question ids (see
 `policy/codex-guardian-v1/policy.json`). Missing noul keys are legal input —
-they exercise the fail-closed path and should be labeled `deny`.
+they exercise the fail-open degradation path and should be labeled `allow`
+unless a present, valid field carries positive deny evidence.
 
 ## Denominators are required
 

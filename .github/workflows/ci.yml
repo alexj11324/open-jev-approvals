@@ -2,7 +2,14 @@ name: ci
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+# A new push on the same ref cancels superseded runs instead of queueing
+# behind them.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:

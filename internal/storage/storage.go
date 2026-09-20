@@ -27,18 +27,52 @@ func Open(path string) (*Store, error) {
 	// busy_timeout keeps concurrent hook invocations from failing with
 	// SQLITE_BUSY on the audit write; WAL reduces reader/writer blocking;
 	// a single pooled connection serializes writers deterministically.
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)", path)
-	db, err := sql.Open("sqlite", dsn)
+	// The pragmas are applied explicitly (not via DSN) so their order is
+	// deterministic: busy_timeout must be set before the WAL transition.
+	db, err := sql.Open("sqlite", "file:"+path)
 	if err != nil {
 		return nil, fmt.Errorf("open state database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA busy_timeout = 10000`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set busy timeout: %w", err)
+	}
+	// journal_mode(WAL) on a cold database needs an exclusive lock and can
+	// return SQLITE_BUSY while another process finishes its own cold open,
+	// so it is retried instead of trusting busy_timeout to cover it.
+	if err := execWithBusyRetry(db, `PRAGMA journal_mode = WAL`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("enable WAL journal: %w", err)
+	}
+	if _, err := db.Exec(`PRAGMA synchronous = NORMAL`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set synchronous: %w", err)
+	}
 	store := &Store{db: db}
 	if err := store.migrate(); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return store, nil
+}
+
+// execWithBusyRetry runs a single statement, retrying while SQLite reports a
+// transient lock. Cold-open races — several hook processes creating the same
+// database file at once — resolve within milliseconds once the first writer
+// commits, so a modest budget is enough.
+func execWithBusyRetry(db *sql.DB, query string) error {
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		_, err := db.Exec(query)
+		if err == nil || !strings.Contains(err.Error(), "SQLITE_BUSY") && !strings.Contains(err.Error(), "database is locked") {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func DefaultPath() string {
@@ -79,7 +113,12 @@ func (s *Store) InstallationID(ctx context.Context) (string, error) {
 		return "", err
 	}
 	id = "inst_" + hex.EncodeToString(bytes)
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO meta(key, value) VALUES ('installation_id', ?)`, id); err != nil {
+	// Two cold-open processes can race here: both read an empty meta table
+	// and both insert. The loser keeps whichever id committed first.
+	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO meta(key, value) VALUES ('installation_id', ?)`, id); err != nil {
+		return "", err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'installation_id'`).Scan(&id); err != nil {
 		return "", err
 	}
 	return id, nil
@@ -187,7 +226,20 @@ func (s *Store) Decision(ctx context.Context, id string) (contracts.Decision, er
 	return decision, nil
 }
 
+// migrate runs schema setup inside one immediate transaction so several
+// processes opening a cold database serialize instead of interleaving
+// CREATE/ALTER statements. BEGIN IMMEDIATE is covered by busy_timeout, so
+// the loser of the race simply waits for the winner to commit.
 func (s *Store) migrate() error {
+	if err := execWithBusyRetry(s.db, `BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("begin migration: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			s.db.Exec(`ROLLBACK`)
+		}
+	}()
 	_, err := s.db.Exec(`
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
@@ -230,6 +282,10 @@ CREATE TABLE IF NOT EXISTS decisions (
 			}
 		}
 	}
+	if _, err := s.db.Exec(`COMMIT`); err != nil {
+		return fmt.Errorf("commit migration: %w", err)
+	}
+	committed = true
 	return nil
 }
 

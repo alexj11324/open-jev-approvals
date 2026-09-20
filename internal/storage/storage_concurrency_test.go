@@ -76,3 +76,33 @@ func TestConcurrentStoresShareOneDatabase(t *testing.T) {
 		t.Errorf("concurrent audit write failed: %v", err)
 	}
 }
+
+// TestConcurrentColdOpen reproduces the process-level race observed when many
+// hook invocations open a database file that does not exist yet: journal_mode
+// and CREATE TABLE must serialize instead of returning SQLITE_BUSY.
+func TestConcurrentColdOpen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fresh.db")
+	const workers = 8
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			store, err := Open(path)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer store.Close()
+			errs <- store.RememberPrompt(context.Background(), "scope", "s", "t", "hello")
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent cold open: %v", err)
+		}
+	}
+}

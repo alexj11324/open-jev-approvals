@@ -21,10 +21,15 @@ import (
 
 const defaultBaseURL = "https://api.typesafe.ai/v1/systemone"
 
-// defaultModel is the pinned JEV model alias this gate was tested against.
-// TYPESAFE_MODEL may override it, but the resolved model in every response is
-// still validated (must be a jev-* model) so an arbitrary or misconfigured
-// model can never produce approvals.
+// modelFamilyPrefix is the trusted JEV model family. Requests can only pin
+// and responses can only resolve to models in this family, so an arbitrary
+// or misconfigured model can never produce approvals.
+const modelFamilyPrefix = "jev-"
+
+// defaultModel is the JEV model alias used when TYPESAFE_MODEL is unset.
+// Operators should pin TYPESAFE_MODEL to a tested numbered version (for
+// example jev-1.13.0): jev-latest is a moving alias, so pinning keeps the
+// gate on the exact model build it was validated against.
 const defaultModel = "jev-latest"
 
 type Question struct {
@@ -74,6 +79,9 @@ func NewFromEnv() (*Client, error) {
 	model := os.Getenv("TYPESAFE_MODEL")
 	if model == "" {
 		model = defaultModel
+	}
+	if !strings.HasPrefix(model, modelFamilyPrefix) {
+		return nil, fmt.Errorf("TYPESAFE_MODEL must be a %q family model, got %q", modelFamilyPrefix, model)
 	}
 	httpClient := &http.Client{
 		Timeout: 5 * time.Second,
@@ -178,7 +186,7 @@ func (c *Client) evaluate(ctx context.Context, request Request) (Response, error
 		return Response{}, fmt.Errorf("read TypeSafe JEV response: %w", err)
 	}
 	if httpResponse.StatusCode < 200 || httpResponse.StatusCode >= 300 {
-		return Response{}, fmt.Errorf("TypeSafe JEV returned HTTP %d: %s", httpResponse.StatusCode, safeError(responseBody))
+		return Response{}, fmt.Errorf("TypeSafe JEV returned HTTP %d: %s", httpResponse.StatusCode, sanitize.ErrorMessage(responseBody, 500))
 	}
 	var response Response
 	if err := json.Unmarshal(responseBody, &response); err != nil {
@@ -250,6 +258,11 @@ func noul(instructions, yes, no string) Question {
 }
 
 func assessmentFromResponse(response Response) (contracts.Assessment, error) {
+	// Fail closed on any model outside the trusted jev-* family: only a
+	// pinned JEV model may produce an assessment.
+	if !strings.HasPrefix(response.Model, modelFamilyPrefix) {
+		return contracts.Assessment{}, fmt.Errorf("JEV response used untrusted model %q", response.Model)
+	}
 	risk, err := choice(response.Answers, "risk_level", []string{"low", "medium", "high", "critical"})
 	if err != nil {
 		return contracts.Assessment{}, err
@@ -279,20 +292,57 @@ func choice(answers map[string]Answer, id string, allowed []string) (Answer, err
 	if !ok || answer.Type != "choice" || answer.Confidence == nil || !validProbability(*answer.Confidence) {
 		return Answer{}, fmt.Errorf("JEV response has no valid %s choice", id)
 	}
+	declared := false
 	for _, value := range allowed {
 		if answer.Choice == value {
-			return answer, nil
+			declared = true
+			break
 		}
 	}
-	return Answer{}, fmt.Errorf("JEV response has invalid %s choice %q", id, answer.Choice)
+	if !declared {
+		return Answer{}, fmt.Errorf("JEV response has invalid %s choice %q", id, answer.Choice)
+	}
+	if err := validateProbabilities(answer, id, allowed); err != nil {
+		return Answer{}, err
+	}
+	return answer, nil
 }
 
-func validProbability(value float64) bool { return !math.IsNaN(value) && value >= 0 && value <= 1 }
-
-func safeError(body []byte) string {
-	message := strings.TrimSpace(string(body))
-	if len(message) > 500 {
-		return message[:500] + "…"
+// validateProbabilities enforces the JEV choice contract: every criterion
+// option must carry a finite probability in [0,1], the probabilities must
+// sum to roughly one (the tolerance absorbs float rounding), and the
+// declared choice must be a highest-probability option (ties allowed).
+func validateProbabilities(answer Answer, id string, allowed []string) error {
+	if answer.Scores == nil {
+		return fmt.Errorf("JEV response has no %s probabilities", id)
 	}
-	return message
+	sum := 0.0
+	for option, probability := range answer.Scores {
+		if !validProbability(probability) {
+			return fmt.Errorf("JEV response has invalid %s probability for %q", id, option)
+		}
+		sum += probability
+	}
+	for _, option := range allowed {
+		if _, ok := answer.Scores[option]; !ok {
+			return fmt.Errorf("JEV response %s probabilities omit %q", id, option)
+		}
+	}
+	if sum < 0.90 || sum > 1.10 {
+		return fmt.Errorf("JEV response %s probabilities sum to %f, want ~1", id, sum)
+	}
+	chosen, ok := answer.Scores[answer.Choice]
+	if !ok {
+		return fmt.Errorf("JEV response %s choice %q has no probability", id, answer.Choice)
+	}
+	for option, probability := range answer.Scores {
+		if probability > chosen {
+			return fmt.Errorf("JEV response %s choice %q is not the highest-probability option (%q scores higher)", id, answer.Choice, option)
+		}
+	}
+	return nil
+}
+
+func validProbability(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value <= 1
 }

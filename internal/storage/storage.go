@@ -54,19 +54,25 @@ func DefaultPath() string {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-func (s *Store) RememberPrompt(ctx context.Context, sessionID, prompt string) error {
+func (s *Store) RememberPrompt(ctx context.Context, sessionID, turnID, prompt string) error {
 	if sessionID == "" || prompt == "" {
 		return nil
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO user_prompts(session_id, prompt, created_at) VALUES (?, ?, ?)`, sessionID, redact(prompt), time.Now().UTC().Format(time.RFC3339Nano))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO user_prompts(session_id, turn_id, prompt, created_at) VALUES (?, ?, ?, ?)`, sessionID, turnID, redact(prompt), time.Now().UTC().Format(time.RFC3339Nano))
 	return err
 }
 
-func (s *Store) UserPrompts(ctx context.Context, sessionID string) ([]string, error) {
+func (s *Store) UserPrompts(ctx context.Context, sessionID, turnID string) ([]string, error) {
 	if sessionID == "" {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT prompt FROM user_prompts WHERE session_id = ? ORDER BY id`, sessionID)
+	query := `SELECT prompt FROM user_prompts WHERE session_id = ? AND turn_id = ? ORDER BY id`
+	args := []any{sessionID, turnID}
+	if turnID == "" {
+		query = `SELECT prompt FROM user_prompts WHERE session_id = ? ORDER BY id DESC LIMIT 1`
+		args = []any{sessionID}
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -125,6 +131,7 @@ func (s *Store) migrate() error {
 CREATE TABLE IF NOT EXISTS user_prompts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL DEFAULT '',
   prompt TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -137,6 +144,15 @@ CREATE TABLE IF NOT EXISTS decisions (
 );`)
 	if err != nil {
 		return fmt.Errorf("migrate state database: %w", err)
+	}
+	var hasTurnID bool
+	if err := s.db.QueryRow(`SELECT COUNT(*) > 0 FROM pragma_table_info('user_prompts') WHERE name = 'turn_id'`).Scan(&hasTurnID); err != nil {
+		return fmt.Errorf("inspect user prompt schema: %w", err)
+	}
+	if !hasTurnID {
+		if _, err := s.db.Exec(`ALTER TABLE user_prompts ADD COLUMN turn_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add user prompt turn id: %w", err)
+		}
 	}
 	return nil
 }

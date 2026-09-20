@@ -81,6 +81,15 @@ func TestComposeDeniesCredentialProbingBeforeAnUncertainConstraint(t *testing.T)
 	}
 }
 
+func TestComposeAllowsLowRiskWhenNoConstraintIsConfirmed(t *testing.T) {
+	assessment := safeAssessment()
+	assessment.Noul["violates_explicit_constraint"] = 0.5
+	decision := Compose(assessment, DefaultThresholds())
+	if decision.Outcome != contracts.DecisionAllow {
+		t.Fatalf("Outcome = %q, want allow; reason = %q", decision.Outcome, decision.Reason)
+	}
+}
+
 func TestComposeDoesNotReviewAnUnconfirmedInjectionHazardWhenEvidenceIsSufficient(t *testing.T) {
 	assessment := safeAssessment()
 	assessment.Noul["malicious_instruction"] = 0.5

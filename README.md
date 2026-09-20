@@ -41,11 +41,11 @@ could compose them. It reports the observed outcome instead of treating an
 uncertain outcome as a false success.
 
 `scripts/test-codex-hook.sh` is the runtime acceptance test. It builds the
-binary, installs this repository's Codex hook, then runs one safe `touch` and
-one private-key copy request through `codex exec`. It requires an authenticated
-Codex CLI, a trusted project `.codex/` layer, and a configured `TYPESAFE_API_KEY`.
-The copy command must be denied before it executes; both targets are temporary
-paths under `/private/tmp`.
+binary, creates an isolated temporary Git repository, installs a Codex hook
+there, and runs a safe `touch` through `codex exec`. It then sends an exact
+Codex `PreToolUse` credential-copy payload to the same binary and requires
+`deny`. It requires an authenticated Codex CLI and a configured
+`TYPESAFE_API_KEY`; all test targets are temporary paths under `/private/tmp`.
 
 ## Install a hook
 
@@ -71,7 +71,8 @@ configured JEV credential without executing a harness tool call.
 Every supported local tool call is normalized into one action and sent to JEV
 with the saved user messages, full tool input, and any verified facts. A single
 TypeSafe request asks independent risk, authorization, egress, credential,
-security-weakening, destructive-effect, prompt-injection, scope, and evidence
+security-weakening, destructive-effect, adapter-provided untrusted-instruction,
+scope, and evidence
 questions. Local `codex-derived-v1` policy owns the outcome:
 
 - `ALLOW` exits `0` with no output.

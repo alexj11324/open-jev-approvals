@@ -81,7 +81,7 @@ func runHook(args []string, stdin io.Reader, stderr io.Writer) (int, error) {
 	defer store.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	action.UserMessages, err = store.UserPrompts(ctx, action.SessionID)
+	action.UserMessages, err = store.UserPrompts(ctx, action.SessionID, action.TurnID)
 	if err != nil {
 		return 2, fmt.Errorf("load user authorization: %w", err)
 	}
@@ -116,6 +116,7 @@ func runEvent(args []string, stdin io.Reader) (int, error) {
 	var event struct {
 		HookEventName string `json:"hook_event_name"`
 		SessionID     string `json:"session_id"`
+		TurnID        string `json:"turn_id"`
 		Prompt        string `json:"prompt"`
 		UserPrompt    string `json:"user_prompt"`
 	}
@@ -134,7 +135,7 @@ func runEvent(args []string, stdin io.Reader) (int, error) {
 		return 2, err
 	}
 	defer store.Close()
-	if err := store.RememberPrompt(context.Background(), event.SessionID, prompt); err != nil {
+	if err := store.RememberPrompt(context.Background(), event.SessionID, event.TurnID, prompt); err != nil {
 		return 2, err
 	}
 	return 0, nil

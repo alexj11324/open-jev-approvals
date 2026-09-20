@@ -15,7 +15,7 @@ func TestEventAcceptsInstalledHarnessArgumentAndStoresPrompt(t *testing.T) {
 
 	code, err := runEvent(
 		[]string{"--harness", "codex"},
-		strings.NewReader(`{"hook_event_name":"UserPromptSubmit","session_id":"session-1","prompt":"Only run git status."}`),
+		strings.NewReader(`{"hook_event_name":"UserPromptSubmit","session_id":"session-1","turn_id":"turn-1","prompt":"Only run git status."}`),
 	)
 	if err != nil || code != 0 {
 		t.Fatalf("runEvent() = (%d, %v), want (0, nil)", code, err)
@@ -26,7 +26,7 @@ func TestEventAcceptsInstalledHarnessArgumentAndStoresPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	prompts, err := store.UserPrompts(context.Background(), "session-1")
+	prompts, err := store.UserPrompts(context.Background(), "session-1", "turn-1")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -41,7 +41,7 @@ func Compose(assessment contracts.Assessment, thresholds Thresholds) contracts.D
 		if !ok || !validProbability(value) {
 			return review(fmt.Sprintf("JEV did not return a valid %s judgment", id))
 		}
-		if value >= thresholds.ReviewProbability {
+		if id != "violates_explicit_constraint" && value >= thresholds.ReviewProbability {
 			return review(fmt.Sprintf("JEV is uncertain about %s", id))
 		}
 	}

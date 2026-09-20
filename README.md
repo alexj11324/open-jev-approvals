@@ -22,6 +22,21 @@ go test ./...
 simple project-local `.env` only when the relevant process environment variable
 is absent; `.env` is ignored by Git.
 
+## Test the gate
+
+```bash
+# No network call: validates a real Hook fixture plus allow/block policy paths.
+bin/jev-approve test --harness codex
+
+# Also evaluates a complete approval state through the configured JEV API.
+bin/jev-approve test --harness codex --live
+```
+
+The test command never executes the tool payload it evaluates. A passing live
+test proves that JEV returned valid typed answers and that the local policy
+could compose them. It reports the observed outcome instead of treating an
+uncertain outcome as a false success.
+
 ## Install a hook
 
 ```bash

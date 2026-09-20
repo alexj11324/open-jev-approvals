@@ -34,7 +34,7 @@ func main() {
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	if len(args) == 0 {
-		return 1, errors.New("usage: jev-approve <hook|event|probe|install|uninstall|status|doctor|inspect>")
+		return 1, errors.New("usage: jev-approve <hook|event|probe|test|install|uninstall|status|doctor|inspect>")
 	}
 	switch args[0] {
 	case "hook":
@@ -43,6 +43,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) 
 		return runEvent(args[1:], stdin)
 	case "probe":
 		return runProbe(stdout)
+	case "test":
+		return runTest(args[1:], stdout)
 	case "install", "uninstall", "status", "doctor":
 		return runManagement(args, stdout)
 	case "inspect":
@@ -151,6 +153,86 @@ func runProbe(stdout io.Writer) (int, error) {
 	}
 	fmt.Fprintf(stdout, "JEV API reachable: %s\n", model)
 	return 0, nil
+}
+
+func runTest(args []string, stdout io.Writer) (int, error) {
+	flags := flag.NewFlagSet("test", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	harnessValue := flags.String("harness", "", "codex or claude-code")
+	live := flags.Bool("live", false, "also call TypeSafe JEV")
+	if err := flags.Parse(args); err != nil {
+		return 1, err
+	}
+	harness, err := parseHarness(*harnessValue)
+	if err != nil {
+		return 1, err
+	}
+
+	action, err := adapters.Normalize(harness, hookTestFixture(harness))
+	if err != nil {
+		return 1, fmt.Errorf("adapter test failed: %w", err)
+	}
+	if action.Kind != contracts.ActionShell || action.Input["command"] != "git status --short" {
+		return 1, errors.New("adapter test produced an unexpected normalized action")
+	}
+	fmt.Fprintln(stdout, "PASS adapter: PreToolUse input normalized")
+
+	safe := testAssessment()
+	if decision := policy.Compose(safe, policy.DefaultThresholds()); decision.Outcome != contracts.DecisionAllow {
+		return 1, fmt.Errorf("policy allow test failed: %s", decision.Reason)
+	}
+	fmt.Fprintln(stdout, "PASS policy allow: bounded low-risk action is allowed")
+
+	blocked := testAssessment()
+	blocked.Noul["violates_explicit_constraint"] = 1
+	if decision := policy.Compose(blocked, policy.DefaultThresholds()); decision.Outcome != contracts.DecisionDeny {
+		return 1, fmt.Errorf("policy block test failed: %s", decision.Reason)
+	}
+	fmt.Fprintln(stdout, "PASS policy block: explicit user constraint is denied")
+
+	if !*live {
+		fmt.Fprintln(stdout, "SKIP live JEV: rerun with --live to verify the configured API")
+		return 0, nil
+	}
+	client, err := jev.NewFromEnv()
+	if err != nil {
+		return 1, err
+	}
+	action.UserMessages = []string{"Run git status in this repository and report the result. Do not modify files or contact external services."}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	assessment, err := client.Assess(ctx, action)
+	if err != nil {
+		return 1, fmt.Errorf("live JEV approval test failed: %w", err)
+	}
+	decision := policy.Compose(assessment, policy.DefaultThresholds())
+	fmt.Fprintf(stdout, "PASS live JEV: model=%s outcome=%s\n", assessment.Model, decision.Outcome)
+	return 0, nil
+}
+
+func hookTestFixture(harness contracts.Harness) []byte {
+	return []byte(fmt.Sprintf(`{"session_id":"test-session","turn_id":"test-turn","tool_use_id":"test-tool","cwd":"/workspace","permission_mode":"bypassPermissions","tool_name":"Bash","tool_input":{"command":"git status --short"}%s}`,
+		map[bool]string{true: `,"agent_id":"test-agent"`, false: ""}[harness == contracts.HarnessClaudeCode]))
+}
+
+func testAssessment() contracts.Assessment {
+	return contracts.Assessment{
+		RiskLevel:          contracts.RiskLow,
+		RiskConfidence:     0.99,
+		Authorization:      contracts.AuthorizationLow,
+		AuthorizationConf:  0.99,
+		EvidenceSufficient: 0.99,
+		NarrowlyScoped:     0.99,
+		Noul: map[string]float64{
+			"violates_explicit_constraint":  0,
+			"sensitive_egress":              0,
+			"egress_authorized":             1,
+			"credential_probing":            0,
+			"persistent_security_weakening": 0,
+			"destructive_effect":            0,
+			"malicious_instruction":         0,
+		},
+	}
 }
 
 func runManagement(args []string, stdout io.Writer) (int, error) {

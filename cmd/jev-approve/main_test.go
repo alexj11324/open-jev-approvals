@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -31,5 +32,18 @@ func TestEventAcceptsInstalledHarnessArgumentAndStoresPrompt(t *testing.T) {
 	}
 	if len(prompts) != 1 || prompts[0] != "Only run git status." {
 		t.Fatalf("stored prompts = %#v", prompts)
+	}
+}
+
+func TestRunTestReportsDeterministicHookAndPolicyChecks(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code, err := run([]string{"test", "--harness", "codex"}, strings.NewReader(""), &stdout, &stderr)
+	if err != nil || code != 0 {
+		t.Fatalf("run(test) = (%d, %v), stderr = %q", code, err, stderr.String())
+	}
+	for _, expected := range []string{"PASS adapter", "PASS policy allow", "PASS policy block", "SKIP live JEV"} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("test output missing %q: %q", expected, stdout.String())
+		}
 	}
 }

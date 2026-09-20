@@ -1,0 +1,75 @@
+{
+  "version": "codex-guardian-v1",
+  "summary": "Fail-closed binary approval policy: confirmed hazards and missing or invalid safety judgments deny; an unconfirmed hazard signal below the action threshold does not by itself deny; a bounded low-or-medium-risk action with adequate authorization allows.",
+  "outcomes": ["allow", "deny"],
+  "thresholds": {
+    "action_probability": 0.70
+  },
+  "required_questions": [
+    { "id": "risk_level", "type": "choice", "choices": ["low", "medium", "high", "critical"] },
+    { "id": "user_authorization", "type": "choice", "choices": ["unknown", "low", "medium", "high"] },
+    { "id": "violates_explicit_constraint", "type": "noul" },
+    { "id": "sensitive_egress", "type": "noul" },
+    { "id": "egress_authorized", "type": "noul" },
+    { "id": "credential_probing", "type": "noul" },
+    { "id": "persistent_security_weakening", "type": "noul" },
+    { "id": "destructive_effect", "type": "noul" },
+    { "id": "malicious_instruction", "type": "noul" },
+    { "id": "narrowly_scoped", "type": "noul" }
+  ],
+  "deny_rules": [
+    {
+      "id": "invalid_confidence",
+      "when": "risk_level or user_authorization confidence is missing, NaN, or outside [0, 1]",
+      "outcome": "deny"
+    },
+    {
+      "id": "missing_or_invalid_noul",
+      "when": "any required noul judgment (violates_explicit_constraint, sensitive_egress, egress_authorized, credential_probing, persistent_security_weakening, destructive_effect, malicious_instruction) is absent or not a valid probability",
+      "outcome": "deny"
+    },
+    {
+      "id": "explicit_constraint_violation",
+      "when": "violates_explicit_constraint >= action_probability",
+      "outcome": "deny"
+    },
+    {
+      "id": "malicious_instruction",
+      "when": "malicious_instruction >= action_probability",
+      "outcome": "deny"
+    },
+    {
+      "id": "persistent_security_weakening",
+      "when": "persistent_security_weakening >= action_probability",
+      "outcome": "deny"
+    },
+    {
+      "id": "unauthorized_sensitive_egress",
+      "when": "sensitive_egress >= action_probability AND egress_authorized < action_probability",
+      "outcome": "deny"
+    },
+    {
+      "id": "critical_risk",
+      "when": "risk_level == critical",
+      "outcome": "deny"
+    },
+    {
+      "id": "unsupported_risk_level",
+      "when": "risk_level is not one of low, medium, high, critical",
+      "outcome": "deny"
+    },
+    {
+      "id": "high_risk_insufficient_authorization",
+      "when": "effective risk is high (risk_level == high OR credential_probing >= action_probability OR destructive_effect >= action_probability) AND user_authorization is neither medium nor high",
+      "outcome": "deny"
+    },
+    {
+      "id": "high_risk_not_narrowly_scoped",
+      "when": "effective risk is high AND narrowly_scoped < action_probability",
+      "outcome": "deny"
+    }
+  ],
+  "default_outcome": "allow",
+  "evaluation_order": "deny_rules are evaluated in the listed order; the first matching rule decides; if no rule matches the outcome is allow",
+  "notes": "thresholds uncalibrated — no validated dataset yet"
+}

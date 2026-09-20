@@ -44,7 +44,7 @@ func cleanAssessment() contracts.Assessment {
 
 func openStore(t *testing.T) *storage.Store {
 	t.Helper()
-	store, err := storage.Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := storage.Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

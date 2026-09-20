@@ -177,6 +177,55 @@ func TestInstallUpgradesStaleHandlerInPlace(t *testing.T) {
 	}
 }
 
+// TestInstallReinstallsWrongMatcher proves a stale handler hiding under a
+// restrictive matcher is pulled into the canonical all-tool group: keeping
+// it under "Bash" would leave every other tool ungated.
+func TestInstallReinstallsWrongMatcher(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	binary := "/opt/jev-approve"
+	stale := `{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"/old/jev-approve hook --harness codex"},{"type":"command","command":"/usr/bin/foreign hook"}]}],"UserPromptSubmit":[{"hooks":[{"command":"/old/jev-approve event --harness codex"}]}],"PermissionRequest":[{"hooks":[{"command":"/old/jev-approve hook --harness codex"}]}]}}`
+	if err := os.WriteFile(path, []byte(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Install(contracts.HarnessCodex, path, binary); err != nil {
+		t.Fatal(err)
+	}
+	config := readConfig(t, path)
+	// The foreign handler keeps its "Bash" matcher; ours lands under "*".
+	var bashGroup, starGroup map[string]any
+	for _, raw := range config["hooks"].(map[string]any)["PreToolUse"].([]any) {
+		group := raw.(map[string]any)
+		switch group["matcher"] {
+		case "Bash":
+			bashGroup = group
+		case "*":
+			starGroup = group
+		}
+	}
+	if bashGroup == nil || starGroup == nil {
+		t.Fatalf("PreToolUse groups = %#v", config["hooks"])
+	}
+	if got := bashGroup["hooks"].([]any); len(got) != 1 {
+		t.Fatalf("Bash group hooks = %#v, want only the foreign handler", got)
+	}
+	found := false
+	for _, raw := range starGroup["hooks"].([]any) {
+		if command, _ := raw.(map[string]any)["command"].(string); strings.Contains(command, "jev-approve") && strings.Contains(command, "hook --harness codex") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("* group lacks our handler: %#v", starGroup)
+	}
+	status, err := Check(contracts.HarnessCodex, path, binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Installed {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
 func TestUninstallRemovesOnlyOurHandlers(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hooks.json")
 	binary := "/opt/jev-approve"

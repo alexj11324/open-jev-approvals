@@ -19,12 +19,12 @@ import (
 func TestConcurrentStoresShareOneDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 
-	storeA, err := Open(path)
+	storeA, err := Open(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer storeA.Close()
-	storeB, err := Open(path)
+	storeB, err := Open(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestConcurrentColdOpen(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			store, err := Open(path)
+			store, err := Open(context.Background(), path)
 			if err != nil {
 				errs <- err
 				return

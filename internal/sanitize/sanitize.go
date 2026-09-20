@@ -26,14 +26,14 @@ var rules = []struct {
 	{regexp.MustCompile(`(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}`), "[REDACTED:api-key]"},
 	{regexp.MustCompile(`sk-[A-Za-z0-9]{20,}`), "[REDACTED:api-key]"},
 	{regexp.MustCompile(`apikey_[a-z0-9_]+`), "apikey_[REDACTED]"},
-	{keyValuePattern, "${1}${2}[REDACTED:value]"},
+	{keyValuePattern, "${1}${2}${3}[REDACTED:value]"},
 }
 
 // Matches secret-looking assignments: --token=abc, "api_key": "abc",
 // password: abc, secret = abc. The key name and separator are preserved so a
 // reviewer can still see which field carried the secret.
 var keyValuePattern = regexp.MustCompile(
-	`(?i)\b(password|passwd|pwd|secret|secret[_-]?key|token|access[_-]?token|auth[_-]?token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|credential)\b` +
+	`(?i)\b(password|passwd|pwd|secret|secret[_-]?key|token|access[_-]?token|auth[_-]?token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|credential)\b(["']?)` +
 		`(\s*(?:=|:=|:|"=>|=>)\s*)` +
 		`("([^"\\]|\\.)*"|'([^'\\]|\\.)*'|[^\s,;&'")}\]]+)`,
 )
@@ -48,16 +48,37 @@ func RedactString(value string) string {
 	return value
 }
 
-// RedactValue deep-redacts decoded JSON values. Non-string scalars (numbers,
-// bools, nil) pass through untouched so identifiers stay intact.
+// sensitiveKeyPattern names map keys whose scalar values are secrets by
+// position, not by shape — `{"api_key": "ordinary-looking-value"}` must
+// redact even when the value matches no token pattern.
+var sensitiveKeyPattern = regexp.MustCompile(
+	`(?i)^(password|passwd|pwd|secret|secret[_-]?key|token|access[_-]?token|auth[_-]?token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|credentials?|authorization|x[_-]?api[_-]?key)$`,
+)
+
+// RedactValue deep-redacts decoded JSON values. Scalars under a sensitive
+// map key are replaced outright; everything else is recursed into so token
+// shapes and key=value assignments inside strings still redact.
 func RedactValue(value any) any {
+	return redactValue(value, "")
+}
+
+func redactValue(value any, key string) any {
+	if key != "" && sensitiveKeyPattern.MatchString(key) {
+		switch value.(type) {
+		case map[string]any, []any:
+			// Structured payloads under a sensitive key still recurse —
+			// their children may hold both secrets and ordinary fields.
+		default:
+			return "[REDACTED:value]"
+		}
+	}
 	switch typed := value.(type) {
 	case string:
 		return RedactString(typed)
 	case map[string]any:
 		out := make(map[string]any, len(typed))
-		for key, child := range typed {
-			out[key] = RedactValue(child)
+		for childKey, child := range typed {
+			out[childKey] = redactValue(child, childKey)
 		}
 		return out
 	case []any:

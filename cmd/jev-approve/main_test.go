@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -28,7 +29,7 @@ func TestEventAcceptsInstalledHarnessArgumentAndStoresPrompt(t *testing.T) {
 		t.Fatalf("runEvent() = (%d, %v), want (0, nil)", code, err)
 	}
 
-	store, err := storage.Open(storage.DefaultPath())
+	store, err := storage.Open(context.Background(), filepath.Join(stateDir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

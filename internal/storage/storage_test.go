@@ -20,7 +20,7 @@ func testScope(t *testing.T, store *Store, sessionID string) string {
 }
 
 func TestUserPromptsScopesAuthorizationToCurrentTurn(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestUserPromptsScopesAuthorizationToCurrentTurn(t *testing.T) {
 }
 
 func TestUserPromptsWithoutTurnIDUsesLatestTurn(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,8 +69,36 @@ func TestUserPromptsWithoutTurnIDUsesLatestTurn(t *testing.T) {
 	}
 }
 
+// TestUserPromptsEmptyTurnIDsUseNewestPromptOnly covers harnesses that never
+// send a turn id: every stored prompt has turn_id='', and without the
+// newest-only rule authorization would accumulate across unrelated requests.
+func TestUserPromptsEmptyTurnIDsUseNewestPromptOnly(t *testing.T) {
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	scope := testScope(t, store, "no-turn-session")
+	if err := store.RememberPrompt(ctx, scope, "no-turn-session", "", "Deploy to production"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RememberPrompt(ctx, scope, "no-turn-session", "", "List the files"); err != nil {
+		t.Fatal(err)
+	}
+
+	prompts, _, err := store.UserPrompts(ctx, scope, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prompts) != 1 || prompts[0] != "List the files" {
+		t.Fatalf("prompts = %#v, want only the newest", prompts)
+	}
+}
+
 func TestAuthorizationVersionAdvancesWithNewPrompts(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +123,7 @@ func TestAuthorizationVersionAdvancesWithNewPrompts(t *testing.T) {
 }
 
 func TestScopesDoNotShareAuthorization(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +183,7 @@ INSERT INTO decisions(id, session_id, action_json, decision_json, created_at)
 		t.Fatal(err)
 	}
 
-	store, err := Open(path)
+	store, err := Open(context.Background(), path)
 	if err != nil {
 		t.Fatalf("open migrated database: %v", err)
 	}
@@ -223,7 +251,7 @@ INSERT INTO decisions(id, session_id, action_json, decision_json, created_at)
 // TestRecordDecisionPersistsAssessment proves the inspect path can recover the
 // JEV assessment later: the raw row must carry the serialized assessment.
 func TestRecordDecisionPersistsAssessment(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

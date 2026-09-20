@@ -224,6 +224,11 @@ func add(hooks map[string]any, event, matcher string, harness contracts.Harness,
 			kept = append(kept, rawGroup)
 			continue
 		}
+		// Our handler only stays where the matcher matches the canonical
+		// value; one hiding under a restrictive matcher (say "Bash") would
+		// leave every other tool ungated, so it is pulled and reinstalled in
+		// the canonical group below.
+		groupMatcher, _ := group["matcher"].(string)
 		handlers, _ := group["hooks"].([]any)
 		keptHandlers := make([]any, 0, len(handlers))
 		touched := false
@@ -235,8 +240,8 @@ func add(hooks map[string]any, event, matcher string, harness contracts.Harness,
 				continue
 			}
 			touched = true
-			if installed {
-				continue // duplicate of ours: drop it
+			if installed || groupMatcher != matcher {
+				continue // duplicate, or stale under a wrong matcher: drop it
 			}
 			handler["command"] = command // refresh in place to the quoted form
 			installed = true
@@ -244,7 +249,7 @@ func add(hooks map[string]any, event, matcher string, harness contracts.Harness,
 		}
 		if touched {
 			if len(keptHandlers) == 0 {
-				continue // group held only duplicate handlers of ours
+				continue // group held only handlers of ours
 			}
 			group["hooks"] = keptHandlers
 		}

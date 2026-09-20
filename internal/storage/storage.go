@@ -20,7 +20,7 @@ import (
 
 type Store struct{ db *sql.DB }
 
-func Open(path string) (*Store, error) {
+func Open(ctx context.Context, path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
@@ -29,28 +29,30 @@ func Open(path string) (*Store, error) {
 	// a single pooled connection serializes writers deterministically.
 	// The pragmas are applied explicitly (not via DSN) so their order is
 	// deterministic: busy_timeout must be set before the WAL transition.
+	// The timeout stays under the harness's hook deadline so a locked
+	// database degrades instead of being killed mid-verdict.
 	db, err := sql.Open("sqlite", "file:"+path)
 	if err != nil {
 		return nil, fmt.Errorf("open state database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`PRAGMA busy_timeout = 10000`); err != nil {
+	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("set busy timeout: %w", err)
 	}
 	// journal_mode(WAL) on a cold database needs an exclusive lock and can
 	// return SQLITE_BUSY while another process finishes its own cold open,
 	// so it is retried instead of trusting busy_timeout to cover it.
-	if err := execWithBusyRetry(db, `PRAGMA journal_mode = WAL`); err != nil {
+	if err := execWithBusyRetry(ctx, db, `PRAGMA journal_mode = WAL`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("enable WAL journal: %w", err)
 	}
-	if _, err := db.Exec(`PRAGMA synchronous = NORMAL`); err != nil {
+	if _, err := db.ExecContext(ctx, `PRAGMA synchronous = NORMAL`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("set synchronous: %w", err)
 	}
 	store := &Store{db: db}
-	if err := store.migrate(); err != nil {
+	if err := store.migrate(ctx); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -60,33 +62,38 @@ func Open(path string) (*Store, error) {
 // execWithBusyRetry runs a single statement, retrying while SQLite reports a
 // transient lock. Cold-open races — several hook processes creating the same
 // database file at once — resolve within milliseconds once the first writer
-// commits, so a modest budget is enough.
-func execWithBusyRetry(db *sql.DB, query string) error {
-	deadline := time.Now().Add(8 * time.Second)
+// commits. The caller's context bounds the retry so a wedged database can
+// never outlive the hook deadline.
+func execWithBusyRetry(ctx context.Context, db *sql.DB, query string) error {
 	for {
-		_, err := db.Exec(query)
+		_, err := db.ExecContext(ctx, query)
 		if err == nil || !strings.Contains(err.Error(), "SQLITE_BUSY") && !strings.Contains(err.Error(), "database is locked") {
 			return err
 		}
-		if time.Now().After(deadline) {
-			return err
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
 }
 
-func DefaultPath() string {
+// DefaultPath resolves the state database location. There is deliberately
+// no relative fallback: when no user home exists a project-relative default
+// would let the reviewed repository own the audit store and the env search
+// path.
+func DefaultPath() (string, error) {
 	if configured := os.Getenv("JEV_APPROVALS_STATE_DIR"); configured != "" {
-		return filepath.Join(configured, "state.db")
+		return filepath.Join(configured, "state.db"), nil
 	}
 	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
-		return filepath.Join(xdg, "jev-approvals", "state.db")
+		return filepath.Join(xdg, "jev-approvals", "state.db"), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join(".jev-approvals", "state.db")
+		return "", fmt.Errorf("resolve user home for state database: %w", err)
 	}
-	return filepath.Join(home, ".local", "state", "jev-approvals", "state.db")
+	return filepath.Join(home, ".local", "state", "jev-approvals", "state.db"), nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -134,36 +141,60 @@ func (s *Store) RememberPrompt(ctx context.Context, scope, sessionID, turnID, pr
 
 // UserPrompts returns the prompts recorded for a scope and the authorization
 // version they were read at. With an empty turnID it returns the prompts of
-// the latest turn only. The version lets callers detect authorization
-// changes that land while a review is in flight.
+// the latest turn only; when the latest turn id is itself empty (harnesses
+// without turn ids), only the single newest prompt counts so authorization
+// cannot accumulate across unrelated requests. Prompts and version are read
+// inside one snapshot transaction so a concurrent prompt insert cannot pair
+// stale prompts with a fresh version.
 func (s *Store) UserPrompts(ctx context.Context, scope, turnID string) ([]string, int64, error) {
 	if scope == "" {
 		return nil, 0, nil
 	}
-	query := `SELECT prompt FROM user_prompts WHERE scope = ? AND turn_id = ? ORDER BY id`
-	args := []any{scope, turnID}
-	if turnID == "" {
-		query = `SELECT prompt FROM user_prompts WHERE scope = ? AND turn_id = (SELECT turn_id FROM user_prompts WHERE scope = ? ORDER BY id DESC LIMIT 1) ORDER BY id`
-		args = []any{scope, scope}
-	}
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
+	defer tx.Rollback()
+
+	var version int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM user_prompts WHERE scope = ?`, scope).Scan(&version); err != nil {
+		return nil, 0, err
+	}
+	if turnID == "" {
+		if err := tx.QueryRowContext(ctx, `SELECT turn_id FROM user_prompts WHERE scope = ? ORDER BY id DESC LIMIT 1`, scope).Scan(&turnID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, version, tx.Commit()
+			}
+			return nil, 0, err
+		}
+	}
+	query := `SELECT prompt FROM user_prompts WHERE scope = ? AND turn_id = ? ORDER BY id`
+	args := []any{scope, turnID}
+	if turnID == "" {
+		// No turn ids exist at all: "the latest turn" degenerates to the
+		// newest prompt only.
+		query = `SELECT prompt FROM user_prompts WHERE scope = ? AND turn_id = '' ORDER BY id DESC LIMIT 1`
+		args = []any{scope}
+	}
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
 	var prompts []string
 	for rows.Next() {
 		var prompt string
 		if err := rows.Scan(&prompt); err != nil {
+			rows.Close()
 			return nil, 0, err
 		}
 		prompts = append(prompts, prompt)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, 0, err
 	}
-	version, err := s.AuthorizationVersion(ctx, scope)
-	if err != nil {
+	rows.Close()
+	if err := tx.Commit(); err != nil {
 		return nil, 0, err
 	}
 	return prompts, version, nil
@@ -230,8 +261,8 @@ func (s *Store) Decision(ctx context.Context, id string) (contracts.Decision, er
 // processes opening a cold database serialize instead of interleaving
 // CREATE/ALTER statements. BEGIN IMMEDIATE is covered by busy_timeout, so
 // the loser of the race simply waits for the winner to commit.
-func (s *Store) migrate() error {
-	if err := execWithBusyRetry(s.db, `BEGIN IMMEDIATE`); err != nil {
+func (s *Store) migrate(ctx context.Context) error {
+	if err := execWithBusyRetry(ctx, s.db, `BEGIN IMMEDIATE`); err != nil {
 		return fmt.Errorf("begin migration: %w", err)
 	}
 	committed := false
@@ -240,7 +271,7 @@ func (s *Store) migrate() error {
 			s.db.Exec(`ROLLBACK`)
 		}
 	}()
-	_, err := s.db.Exec(`
+	_, err := s.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -273,16 +304,16 @@ CREATE TABLE IF NOT EXISTS decisions (
 	} {
 		var present bool
 		inspect := fmt.Sprintf(`SELECT COUNT(*) > 0 FROM pragma_table_info('%s') WHERE name = ?`, migration.table)
-		if err := s.db.QueryRow(inspect, migration.column).Scan(&present); err != nil {
+		if err := s.db.QueryRowContext(ctx, inspect, migration.column).Scan(&present); err != nil {
 			return fmt.Errorf("inspect %s schema: %w", migration.table, err)
 		}
 		if !present {
-			if _, err := s.db.Exec(migration.ddl); err != nil {
+			if _, err := s.db.ExecContext(ctx, migration.ddl); err != nil {
 				return fmt.Errorf("migrate %s.%s: %w", migration.table, migration.column, err)
 			}
 		}
 	}
-	if _, err := s.db.Exec(`COMMIT`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `COMMIT`); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
 	}
 	committed = true

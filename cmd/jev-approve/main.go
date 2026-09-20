@@ -114,7 +114,9 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, err
 	// Degraded reviewer paths still funnel through Review: a verdict that
 	// positively denies must deny even when the audit store is gone.
 	var store *storage.Store
-	if s, err := storage.Open(storage.DefaultPath()); err == nil {
+	if path, err := storage.DefaultPath(); err != nil {
+		fmt.Fprintf(stderr, "jev-approve: %v; reviewer degraded\n", err)
+	} else if s, err := storage.Open(ctx, path); err == nil {
 		store = s
 		defer store.Close()
 		if installationID, err := store.InstallationID(ctx); err == nil {
@@ -222,7 +224,11 @@ func runEvent(args []string, stdin io.Reader) (int, error) {
 	if prompt == "" {
 		prompt = event.UserPrompt
 	}
-	store, err := storage.Open(storage.DefaultPath())
+	path, err := storage.DefaultPath()
+	if err != nil {
+		return 0, nil
+	}
+	store, err := storage.Open(ctx, path)
 	if err != nil {
 		return 0, nil
 	}
@@ -402,7 +408,11 @@ func runInspect(args []string, stdout io.Writer) (int, error) {
 	if len(args) != 1 {
 		return 1, errors.New("usage: jev-approve inspect <review-id>")
 	}
-	store, err := storage.Open(storage.DefaultPath())
+	path, err := storage.DefaultPath()
+	if err != nil {
+		return 1, err
+	}
+	store, err := storage.Open(context.Background(), path)
 	if err != nil {
 		return 1, err
 	}

@@ -78,8 +78,7 @@ Claude Code：exit `0` 放行，exit `2` 阻断。
 ## 命令
 
 ```
-jev-approve install|uninstall|status|doctor  --harness claude-code --project <repo>
-jev-approve doctor --live                    # 实测 Jev
+jev-approve install|uninstall|status|doctor [--live] --harness claude-code --project <repo>
 jev-approve probe                            # 连通性检查
 jev-approve test [--live] --harness claude-code
 jev-approve inspect <review-id>              # 查看一条已记录的决策

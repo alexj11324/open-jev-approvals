@@ -88,8 +88,7 @@ Claude Code: exit `0` allows, exit `2` blocks.
 ## Commands
 
 ```
-jev-approve install|uninstall|status|doctor  --harness claude-code --project <repo>
-jev-approve doctor --live                    # ping Jev
+jev-approve install|uninstall|status|doctor [--live] --harness claude-code --project <repo>
 jev-approve probe                            # connectivity check
 jev-approve test [--live] --harness claude-code
 jev-approve inspect <review-id>              # print one recorded decision

@@ -42,7 +42,26 @@ func TestInstallIsIdempotentAndPreservesHarnessSettings(t *testing.T) {
 	if len(hooks["PreToolUse"].([]any)) != 1 {
 		t.Fatalf("PreToolUse hook groups = %#v", hooks["PreToolUse"])
 	}
+	if len(hooks["PermissionRequest"].([]any)) != 1 {
+		t.Fatalf("PermissionRequest hook groups = %#v", hooks["PermissionRequest"])
+	}
 	if config["permission_mode"] != "bypassPermissions" || config["model_provider"] != "third-party" {
 		t.Fatalf("installer changed harness settings: %#v", config)
+	}
+}
+
+func TestCheckRequiresPermissionRequestForCodex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	binary := "/opt/jev-approve"
+	legacy := `{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":"/opt/jev-approve event --harness codex"}]}],"PreToolUse":[{"hooks":[{"command":"/opt/jev-approve hook --harness codex"}]}]}}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status, err := Check(contracts.HarnessCodex, path, binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Installed {
+		t.Fatal("Check().Installed = true without PermissionRequest hook")
 	}
 }

@@ -9,6 +9,13 @@ const (
 	HarnessClaudeCode Harness = "claude-code"
 )
 
+type HookEvent string
+
+const (
+	HookPreToolUse        HookEvent = "PreToolUse"
+	HookPermissionRequest HookEvent = "PermissionRequest"
+)
+
 type ActionKind string
 
 const (
@@ -22,6 +29,7 @@ const (
 
 type Action struct {
 	Harness      Harness        `json:"harness"`
+	HookEvent    HookEvent      `json:"hook_event_name"`
 	SessionID    string         `json:"session_id"`
 	TurnID       string         `json:"turn_id,omitempty"`
 	ToolUseID    string         `json:"tool_use_id,omitempty"`
@@ -56,23 +64,20 @@ const (
 )
 
 type Assessment struct {
-	Model              string             `json:"model"`
-	RiskLevel          RiskLevel          `json:"risk_level"`
-	RiskConfidence     float64            `json:"risk_confidence"`
-	Authorization      Authorization      `json:"authorization"`
-	AuthorizationConf  float64            `json:"authorization_confidence"`
-	EvidenceSufficient float64            `json:"evidence_sufficient"`
-	NarrowlyScoped     float64            `json:"narrowly_scoped"`
-	Noul               map[string]float64 `json:"noul"`
+	Model             string             `json:"model"`
+	RiskLevel         RiskLevel          `json:"risk_level"`
+	RiskConfidence    float64            `json:"risk_confidence"`
+	Authorization     Authorization      `json:"authorization"`
+	AuthorizationConf float64            `json:"authorization_confidence"`
+	NarrowlyScoped    float64            `json:"narrowly_scoped"`
+	Noul              map[string]float64 `json:"noul"`
 }
 
 type DecisionOutcome string
 
 const (
-	DecisionAllow          DecisionOutcome = "allow"
-	DecisionDeny           DecisionOutcome = "deny"
-	DecisionReviewRequired DecisionOutcome = "review_required"
-	DecisionError          DecisionOutcome = "error"
+	DecisionAllow DecisionOutcome = "allow"
+	DecisionDeny  DecisionOutcome = "deny"
 )
 
 type Decision struct {

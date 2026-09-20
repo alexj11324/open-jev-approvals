@@ -3,11 +3,18 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/alexjiang/open-jev-approvals/internal/contracts"
 	"github.com/alexjiang/open-jev-approvals/internal/storage"
 )
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
 
 func TestEventAcceptsInstalledHarnessArgumentAndStoresPrompt(t *testing.T) {
 	stateDir := t.TempDir()
@@ -45,5 +52,93 @@ func TestRunTestReportsDeterministicHookAndPolicyChecks(t *testing.T) {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Fatalf("test output missing %q: %q", expected, stdout.String())
 		}
+	}
+}
+
+func TestWriteHookDecisionUsesCodexPermissionRequestProtocol(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code, err := writeHookDecision(
+		contracts.HarnessCodex,
+		contracts.HookPermissionRequest,
+		contracts.Decision{Outcome: contracts.DecisionAllow, Reason: "scoped authorization"},
+		&stdout,
+		&stderr,
+	)
+	if err != nil || code != 0 {
+		t.Fatalf("writeHookDecision() = (%d, %v)", code, err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	hookOutput := output["hookSpecificOutput"].(map[string]any)
+	decision := hookOutput["decision"].(map[string]any)
+	if hookOutput["hookEventName"] != "PermissionRequest" || decision["behavior"] != "allow" {
+		t.Fatalf("output = %#v", output)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestWriteHookDecisionDeniesFailedCodexPermissionRequest(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code, err := writeHookDecision(
+		contracts.HarnessCodex,
+		contracts.HookPermissionRequest,
+		contracts.Decision{Outcome: contracts.DecisionDeny, Reason: "review failed"},
+		&stdout,
+		&stderr,
+	)
+	if err != nil || code != 0 {
+		t.Fatalf("writeHookDecision() = (%d, %v)", code, err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	hookOutput := output["hookSpecificOutput"].(map[string]any)
+	decision := hookOutput["decision"].(map[string]any)
+	if decision["behavior"] != "deny" || decision["message"] != "review failed" {
+		t.Fatalf("output = %#v", output)
+	}
+}
+
+func TestWriteHookDecisionBlocksConfirmedCodexPreToolUseHazard(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code, err := writeHookDecision(
+		contracts.HarnessCodex,
+		contracts.HookPreToolUse,
+		contracts.Decision{Outcome: contracts.DecisionDeny, Reason: "credential probing"},
+		&stdout,
+		&stderr,
+	)
+	if err != nil || code != 0 {
+		t.Fatalf("writeHookDecision() = (%d, %v)", code, err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	hookOutput := output["hookSpecificOutput"].(map[string]any)
+	if hookOutput["permissionDecision"] != "deny" || hookOutput["permissionDecisionReason"] != "credential probing" {
+		t.Fatalf("output = %#v", output)
+	}
+}
+
+func TestWriteHookDecisionBlocksWhenVerdictCannotBeWritten(t *testing.T) {
+	var stderr bytes.Buffer
+	code, err := writeHookDecision(
+		contracts.HarnessCodex,
+		contracts.HookPermissionRequest,
+		contracts.Decision{Outcome: contracts.DecisionAllow, Reason: "safe"},
+		failingWriter{},
+		&stderr,
+	)
+	if err != nil || code != 2 {
+		t.Fatalf("writeHookDecision() = (%d, %v), want (2, nil)", code, err)
+	}
+	if !strings.Contains(stderr.String(), "could not emit the required hook verdict") {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
 }

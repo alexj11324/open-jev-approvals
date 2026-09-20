@@ -38,7 +38,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) 
 	}
 	switch args[0] {
 	case "hook":
-		return runHook(args[1:], stdin, stderr)
+		return runHook(args[1:], stdin, stdout, stderr)
 	case "event":
 		return runEvent(args[1:], stdin)
 	case "probe":
@@ -54,7 +54,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) 
 	}
 }
 
-func runHook(args []string, stdin io.Reader, stderr io.Writer) (int, error) {
+func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	flags := flag.NewFlagSet("hook", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	harnessValue := flags.String("harness", "", "codex or claude-code")
@@ -88,15 +88,57 @@ func runHook(args []string, stdin io.Reader, stderr io.Writer) (int, error) {
 	client, err := jev.NewFromEnv()
 	if err != nil {
 		decision := review.Service{Store: store, Thresholds: policy.DefaultThresholds()}.Review(ctx, action)
+		return writeHookDecision(harness, action.HookEvent, decision, stdout, stderr)
+	}
+	decision := review.Service{Assessor: client, Store: store, Thresholds: policy.DefaultThresholds()}.Review(ctx, action)
+	return writeHookDecision(harness, action.HookEvent, decision, stdout, stderr)
+}
+
+func writeHookDecision(harness contracts.Harness, event contracts.HookEvent, decision contracts.Decision, stdout, stderr io.Writer) (int, error) {
+	if harness != contracts.HarnessCodex {
+		if decision.Outcome == contracts.DecisionAllow {
+			return 0, nil
+		}
 		fmt.Fprintf(stderr, "JEV approval blocked: %s (review %s)\n", decision.Reason, decision.ReviewID)
 		return 2, nil
 	}
-	decision := review.Service{Assessor: client, Store: store, Thresholds: policy.DefaultThresholds()}.Review(ctx, action)
-	if decision.Outcome == contracts.DecisionAllow {
-		return 0, nil
+
+	switch event {
+	case contracts.HookPreToolUse:
+		if decision.Outcome == contracts.DecisionAllow {
+			return 0, nil
+		}
+		return writeRequiredHookJSON(stdout, stderr, map[string]any{
+			"hookSpecificOutput": map[string]any{
+				"hookEventName":            string(contracts.HookPreToolUse),
+				"permissionDecision":       "deny",
+				"permissionDecisionReason": decision.Reason,
+			},
+		})
+	case contracts.HookPermissionRequest:
+		var hookDecision map[string]any
+		if decision.Outcome == contracts.DecisionAllow {
+			hookDecision = map[string]any{"behavior": "allow"}
+		} else {
+			hookDecision = map[string]any{"behavior": "deny", "message": decision.Reason}
+		}
+		return writeRequiredHookJSON(stdout, stderr, map[string]any{
+			"hookSpecificOutput": map[string]any{
+				"hookEventName": string(contracts.HookPermissionRequest),
+				"decision":      hookDecision,
+			},
+		})
+	default:
+		return 2, fmt.Errorf("unsupported hook event %q", event)
 	}
-	fmt.Fprintf(stderr, "JEV approval blocked: %s (review %s)\n", decision.Reason, decision.ReviewID)
-	return 2, nil
+}
+
+func writeRequiredHookJSON(stdout, stderr io.Writer, value any) (int, error) {
+	if _, err := writeJSON(stdout, value); err != nil {
+		fmt.Fprintf(stderr, "JEV approval denied: could not emit the required hook verdict: %v\n", err)
+		return 2, nil
+	}
+	return 0, nil
 }
 
 func runEvent(args []string, stdin io.Reader) (int, error) {
@@ -226,12 +268,11 @@ func hookTestFixture(harness contracts.Harness) []byte {
 
 func testAssessment() contracts.Assessment {
 	return contracts.Assessment{
-		RiskLevel:          contracts.RiskLow,
-		RiskConfidence:     0.99,
-		Authorization:      contracts.AuthorizationLow,
-		AuthorizationConf:  0.99,
-		EvidenceSufficient: 0.99,
-		NarrowlyScoped:     0.99,
+		RiskLevel:         contracts.RiskLow,
+		RiskConfidence:    0.99,
+		Authorization:     contracts.AuthorizationLow,
+		AuthorizationConf: 0.99,
+		NarrowlyScoped:    0.99,
 		Noul: map[string]float64{
 			"violates_explicit_constraint":  0,
 			"sensitive_egress":              0,

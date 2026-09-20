@@ -34,8 +34,13 @@ func Install(harness contracts.Harness, configPath, binary string) error {
 		return err
 	}
 	hooks := ensureMap(config, "hooks")
-	add(hooks, "UserPromptSubmit", "", binary+" event --harness "+string(harness))
-	add(hooks, "PreToolUse", "*", binary+" hook --harness "+string(harness))
+	for event, command := range expectedHooks(harness, binary) {
+		matcher := "*"
+		if event == "UserPromptSubmit" {
+			matcher = ""
+		}
+		add(hooks, event, matcher, command)
+	}
 	return save(configPath, config)
 }
 
@@ -77,16 +82,32 @@ func Check(harness contracts.Harness, configPath, binary string) (Status, error)
 		return Status{}, err
 	}
 	hooks, _ := config["hooks"].(map[string]any)
-	prefix := binary + " "
-	for _, raw := range hooks {
+	for event, command := range expectedHooks(harness, binary) {
+		raw := hooks[event]
 		groups, _ := raw.([]any)
+		found := false
 		for _, group := range groups {
-			if groupMap, ok := group.(map[string]any); ok && groupUsesBinary(groupMap, prefix) {
-				return Status{ConfigPath: configPath, Installed: true}, nil
+			if groupMap, ok := group.(map[string]any); ok && groupHasCommand(groupMap, command) {
+				found = true
+				break
 			}
 		}
+		if !found {
+			return Status{ConfigPath: configPath, Installed: false}, nil
+		}
 	}
-	return Status{ConfigPath: configPath, Installed: false}, nil
+	return Status{ConfigPath: configPath, Installed: true}, nil
+}
+
+func expectedHooks(harness contracts.Harness, binary string) map[string]string {
+	commands := map[string]string{
+		"UserPromptSubmit": binary + " event --harness " + string(harness),
+		"PreToolUse":       binary + " hook --harness " + string(harness),
+	}
+	if harness == contracts.HarnessCodex {
+		commands["PermissionRequest"] = binary + " hook --harness " + string(harness)
+	}
+	return commands
 }
 
 func add(hooks map[string]any, event, matcher, command string) {

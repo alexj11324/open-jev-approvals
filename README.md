@@ -1,10 +1,12 @@
 # open-jev-approvals
 
-An MIT-licensed, fail-closed JEV approval gate for Codex and Claude Code hooks.
+An MIT-licensed JEV approval gate for Codex and Claude Code hooks.
 
-It receives lifecycle events and `PreToolUse` payloads, sends every intercepted
-tool action to TypeSafe Jev, composes the typed judgments through a local policy,
-and returns exit `0` to allow or exit `2` to block.
+It receives lifecycle events plus tool and permission payloads, sends each
+intercepted action to TypeSafe Jev, and composes the typed judgments through a
+local policy. On Codex, it preserves the upstream split between `PreToolUse`
+blocking and `PermissionRequest` decisions. JEV is the only reviewer: every
+intercepted action ends in an explicit local `allow` or `deny`.
 
 The first release targets macOS and Linux. It leaves each harness's model,
 provider, sandbox, and bypass mode untouched.
@@ -45,8 +47,9 @@ binary, creates an isolated temporary Git repository, installs a Codex hook
 there, and runs a safe `touch` through `codex exec`. It then sends an exact
 Codex `PreToolUse` credential-copy payload to the same binary and requires
 `deny`, then submits a normal action in the same session and requires `allow`.
-It requires an authenticated Codex CLI and a configured
-`TYPESAFE_API_KEY`; all test targets are temporary paths under `/private/tmp`.
+Finally, it submits an exact `PermissionRequest` payload and requires a direct
+JEV `allow` verdict. It requires an authenticated Codex CLI and a configured
+`TYPESAFE_API_KEY`; its targets are disposable temporary paths.
 
 ## Install a hook
 
@@ -58,10 +61,10 @@ bin/jev-approve install --harness claude-code --project /path/to/target-project 
   --binary "$(pwd)/bin/jev-approve"
 ```
 
-The installer adds `UserPromptSubmit` and all-tool `PreToolUse` command hooks,
-without changing the harness's permission mode, sandbox, model, provider, or
-provider credentials. Codex project hooks still require Codex trust before they
-will execute.
+The installer adds `UserPromptSubmit` and all-tool `PreToolUse` command hooks.
+For Codex it also adds an all-tool `PermissionRequest` hook. It does not change
+the harness's permission mode, sandbox, model, provider, or provider
+credentials. Codex project hooks still require Codex trust before they execute.
 
 Use `status`, `doctor`, `inspect <review-id>`, and `uninstall` with the same
 `--harness`, `--project`, and `--binary` values. `doctor --live` verifies the
@@ -73,24 +76,41 @@ Every supported local tool call is normalized into one action and sent to JEV
 with the saved user messages, full tool input, and any verified facts. A single
 TypeSafe request asks independent risk, authorization, egress, credential,
 security-weakening, destructive-effect, adapter-provided untrusted-instruction,
-scope, and evidence
+and scope
 questions. Local `codex-derived-v1` policy owns the outcome:
 
-- `ALLOW` exits `0` with no output.
-- `DENY`, `REVIEW_REQUIRED`, and service/audit failures exit `2` and explain
-  the blocking reason on stderr.
+- A confirmed Codex `PreToolUse` denial returns the upstream
+  `permissionDecision: deny` JSON shape. An allow returns successfully with no
+  blocking output, as required by the upstream protocol.
+- A Codex `PermissionRequest` always returns the upstream nested
+  `decision.behavior` JSON shape with either `allow` or `deny`.
+- Invalid model output, service failure, and audit failure deny. No decision is
+  delegated to Codex user approval, Guardian, or auto review.
+- Claude Code retains the exit `0` allow and exit `2` block behavior because
+  this release does not replace its approval router.
 - Critical risk, explicit-constraint violations, unauthorized sensitive egress,
-  credential probing, and unauthorized persistent security weakening are denied.
-- High-risk work requires high, sufficiently confident authorization and a
-  narrow scope. Missing evidence for non-low-risk work and runtime errors fail
-  closed.
-- Low-risk actions with complete tool input and no confirmed hazard are not
-  blocked solely by an uncertain general evidence-sufficiency judgment.
+  unauthorized credential probing, and unauthorized persistent security
+  weakening are denied.
+- Low- and medium-risk actions allow unless an explicit policy deny applies.
+- High-risk work requires at least medium user authorization and a narrow
+  scope. Critical risk always denies.
+- Choice confidence is retained for audit but is not a deny condition. This
+  avoids converting harmless low/medium ambiguity into a false block.
 
-The current thresholds are intentionally marked uncalibrated: safety hazards
-deny at `0.70`; low-risk evidence sufficiency permits at `0.60`; high-risk
-authorization and risk confidence require `0.70`. Collect labeled approval
-outcomes before changing them.
+The current Noul action threshold is `0.70`. Collect labeled approval outcomes
+before changing it.
+
+## Codex source contract
+
+The policy and output contracts are copied from upstream Codex at commit
+`5c5308fc9a9ee789049d646ef11e5400384b9c6f`:
+
+- [Guardian risk, authorization, evidence, and outcome rules](https://github.com/openai/codex/blob/5c5308fc9a9ee789049d646ef11e5400384b9c6f/codex-rs/prompts/templates/guardian/policy_template.md).
+- [Default security policy for egress, credentials, persistent weakening, and destructive actions](https://github.com/openai/codex/blob/5c5308fc9a9ee789049d646ef11e5400384b9c6f/codex-rs/prompts/templates/guardian/policy.md).
+- [Guardian's strict `allow`/`deny` assessment schema](https://github.com/openai/codex/blob/5c5308fc9a9ee789049d646ef11e5400384b9c6f/codex-rs/ext/guardian-reviewer/src/assessment.rs).
+- [`PreToolUse` and `PermissionRequest` wire formats](https://github.com/openai/codex/tree/5c5308fc9a9ee789049d646ef11e5400384b9c6f/codex-rs/hooks/src/events).
+
+JEV replaces the reviewer while Codex transports and enforces the hook verdict.
 
 ## Scope boundary
 

@@ -8,12 +8,11 @@ import (
 
 func safeAssessment() contracts.Assessment {
 	return contracts.Assessment{
-		RiskLevel:          contracts.RiskLow,
-		RiskConfidence:     0.95,
-		Authorization:      contracts.AuthorizationLow,
-		AuthorizationConf:  0.95,
-		EvidenceSufficient: 0.98,
-		NarrowlyScoped:     0.98,
+		RiskLevel:         contracts.RiskLow,
+		RiskConfidence:    0.95,
+		Authorization:     contracts.AuthorizationLow,
+		AuthorizationConf: 0.95,
+		NarrowlyScoped:    0.98,
 		Noul: map[string]float64{
 			"violates_explicit_constraint":  0.01,
 			"sensitive_egress":              0.01,
@@ -42,22 +41,21 @@ func TestComposeDeniesCriticalAction(t *testing.T) {
 	}
 }
 
-func TestComposeReviewsIncompleteEvidence(t *testing.T) {
+func TestComposeDeniesUnsupportedRiskLevel(t *testing.T) {
 	assessment := safeAssessment()
-	assessment.RiskLevel = contracts.RiskMedium
-	assessment.EvidenceSufficient = 0.4
+	assessment.RiskLevel = contracts.RiskUnresolved
 	decision := Compose(assessment, DefaultThresholds())
-	if decision.Outcome != contracts.DecisionReviewRequired {
-		t.Fatalf("Outcome = %q, want review_required", decision.Outcome)
+	if decision.Outcome != contracts.DecisionDeny {
+		t.Fatalf("Outcome = %q, want deny", decision.Outcome)
 	}
 }
 
-func TestComposeAllowsLowRiskWithUncertainEvidenceQuestion(t *testing.T) {
+func TestComposeAllowsMediumRisk(t *testing.T) {
 	assessment := safeAssessment()
-	assessment.EvidenceSufficient = 0.4
+	assessment.RiskLevel = contracts.RiskMedium
 	decision := Compose(assessment, DefaultThresholds())
 	if decision.Outcome != contracts.DecisionAllow {
-		t.Fatalf("Outcome = %q, want allow; reason = %q", decision.Outcome, decision.Reason)
+		t.Fatalf("Outcome = %q, want allow", decision.Outcome)
 	}
 }
 
@@ -100,19 +98,38 @@ func TestComposeAllowsLowRiskWhenNoConstraintIsConfirmed(t *testing.T) {
 	}
 }
 
-func TestComposeReviewsUncertainInjectionHazard(t *testing.T) {
+func TestComposeAllowsWithoutAffirmativeInjectionEvidence(t *testing.T) {
 	assessment := safeAssessment()
 	assessment.Noul["malicious_instruction"] = 0.5
 	decision := Compose(assessment, DefaultThresholds())
-	if decision.Outcome != contracts.DecisionReviewRequired {
-		t.Fatalf("Outcome = %q, want review_required; reason = %q", decision.Outcome, decision.Reason)
+	if decision.Outcome != contracts.DecisionAllow {
+		t.Fatalf("Outcome = %q, want allow; reason = %q", decision.Outcome, decision.Reason)
 	}
 }
 
 func TestComposeAllowsLowRiskWhenAuthorizationBandsAreUncertain(t *testing.T) {
 	assessment := safeAssessment()
 	assessment.AuthorizationConf = 0.58
-	assessment.EvidenceSufficient = 0.67
+	decision := Compose(assessment, DefaultThresholds())
+	if decision.Outcome != contracts.DecisionAllow {
+		t.Fatalf("Outcome = %q, want allow; reason = %q", decision.Outcome, decision.Reason)
+	}
+}
+
+func TestComposeDeniesHighRiskWithoutMediumAuthorization(t *testing.T) {
+	assessment := safeAssessment()
+	assessment.RiskLevel = contracts.RiskHigh
+	assessment.Authorization = contracts.AuthorizationLow
+	decision := Compose(assessment, DefaultThresholds())
+	if decision.Outcome != contracts.DecisionDeny {
+		t.Fatalf("Outcome = %q, want deny; reason = %q", decision.Outcome, decision.Reason)
+	}
+}
+
+func TestComposeAllowsScopedHighRiskWithMediumAuthorization(t *testing.T) {
+	assessment := safeAssessment()
+	assessment.RiskLevel = contracts.RiskHigh
+	assessment.Authorization = contracts.AuthorizationMedium
 	decision := Compose(assessment, DefaultThresholds())
 	if decision.Outcome != contracts.DecisionAllow {
 		t.Fatalf("Outcome = %q, want allow; reason = %q", decision.Outcome, decision.Reason)

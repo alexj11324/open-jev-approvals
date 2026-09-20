@@ -34,8 +34,9 @@ func Normalize(harness contracts.Harness, raw []byte) (contracts.Action, error) 
 	if err := ensureEOF(decoder); err != nil {
 		return contracts.Action{}, err
 	}
-	if event.HookEventName != "PreToolUse" {
-		return contracts.Action{}, fmt.Errorf("hook input event is %q, want PreToolUse", event.HookEventName)
+	hookEvent := contracts.HookEvent(event.HookEventName)
+	if hookEvent != contracts.HookPreToolUse && hookEvent != contracts.HookPermissionRequest {
+		return contracts.Action{}, fmt.Errorf("hook input event is %q, want PreToolUse or PermissionRequest", event.HookEventName)
 	}
 	if event.ToolName == "" {
 		return contracts.Action{}, fmt.Errorf("hook input has no tool_name")
@@ -56,6 +57,7 @@ func Normalize(harness contracts.Harness, raw []byte) (contracts.Action, error) 
 
 	return contracts.Action{
 		Harness:    harness,
+		HookEvent:  hookEvent,
 		SessionID:  event.SessionID,
 		TurnID:     event.TurnID,
 		ToolUseID:  event.ToolUseID,

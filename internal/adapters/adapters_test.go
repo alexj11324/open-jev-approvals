@@ -30,6 +30,30 @@ func TestNormalizeCodexBash(t *testing.T) {
 	if action.SessionID != "session-1" || action.TurnID != "turn-1" {
 		t.Fatalf("session context = %#v", action)
 	}
+	if action.HookEvent != contracts.HookPreToolUse {
+		t.Fatalf("HookEvent = %q", action.HookEvent)
+	}
+}
+
+func TestNormalizeCodexPermissionRequest(t *testing.T) {
+	action, err := Normalize(contracts.HarnessCodex, []byte(`{
+  "hook_event_name":"PermissionRequest",
+  "session_id":"session-approval",
+  "turn_id":"turn-approval",
+  "cwd":"/workspace",
+  "permission_mode":"on-request",
+  "tool_name":"Bash",
+  "tool_input":{"command":"rm -f /tmp/explicit-marker","description":"remove the marker"}
+}`))
+	if err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+	if action.HookEvent != contracts.HookPermissionRequest {
+		t.Fatalf("HookEvent = %q, want %q", action.HookEvent, contracts.HookPermissionRequest)
+	}
+	if action.ToolUseID != "" {
+		t.Fatalf("ToolUseID = %q, PermissionRequest should not require one", action.ToolUseID)
+	}
 }
 
 func TestNormalizeClaudeEdit(t *testing.T) {

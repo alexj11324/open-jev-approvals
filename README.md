@@ -1,5 +1,7 @@
 # open-jev-approvals
 
+English | [简体中文](README.zh-CN.md)
+
 An MIT-licensed JEV approval gate for Codex and Claude Code hooks.
 
 It receives hook events plus tool and permission payloads, sends each

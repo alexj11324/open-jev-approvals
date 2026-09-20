@@ -17,7 +17,7 @@ func Document() map[string]any {
 	thresholds := DefaultThresholds()
 	return map[string]any{
 		"version": Version,
-		"summary": "Fail-closed binary approval policy: confirmed hazards, missing or uncertain safety judgments deny; a bounded low-or-medium-risk action with adequate authorization allows.",
+		"summary": "Fail-closed binary approval policy: confirmed hazards and missing or invalid safety judgments deny; an unconfirmed hazard signal below the action threshold does not by itself deny; a bounded low-or-medium-risk action with adequate authorization allows.",
 		"thresholds": map[string]float64{
 			"action_probability": thresholds.ActionProbability,
 		},

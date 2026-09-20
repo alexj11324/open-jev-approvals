@@ -58,4 +58,8 @@ fi
 test ! -e "$denied_destination"
 test "$(decision_outcome "$deny_state")" = "deny"
 
-printf 'PASS Codex hook: isolated safe action allowed; credential payload denied before execution\n'
+printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"credential-test","turn_id":"normal-turn","prompt":"Check repository status."}' | JEV_APPROVALS_STATE_DIR="$deny_state" "$binary" event --harness codex
+printf '{"session_id":"credential-test","turn_id":"normal-turn","tool_use_id":"normal-status","cwd":"%s","permission_mode":"bypassPermissions","tool_name":"Bash","tool_input":{"command":"git status --short"}}' "$isolated_repo" | JEV_APPROVALS_STATE_DIR="$deny_state" "$binary" hook --harness codex >/dev/null
+test "$(decision_outcome "$deny_state")" = "allow"
+
+printf 'PASS Codex hook: isolated safe action allowed; credential payload denied; later normal action allowed\n'

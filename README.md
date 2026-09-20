@@ -44,7 +44,8 @@ uncertain outcome as a false success.
 binary, creates an isolated temporary Git repository, installs a Codex hook
 there, and runs a safe `touch` through `codex exec`. It then sends an exact
 Codex `PreToolUse` credential-copy payload to the same binary and requires
-`deny`. It requires an authenticated Codex CLI and a configured
+`deny`, then submits a normal action in the same session and requires `allow`.
+It requires an authenticated Codex CLI and a configured
 `TYPESAFE_API_KEY`; all test targets are temporary paths under `/private/tmp`.
 
 ## Install a hook

@@ -29,13 +29,6 @@ func Compose(assessment contracts.Assessment, thresholds Thresholds) contracts.D
 	if !validProbability(assessment.RiskConfidence) || !validProbability(assessment.AuthorizationConf) {
 		return review("JEV returned an invalid Choice confidence")
 	}
-	if assessment.RiskConfidence < thresholds.RiskConfidence {
-		return review("JEV risk classification confidence is below the configured approval threshold")
-	}
-	if assessment.EvidenceSufficient < thresholds.EvidenceProbability {
-		return review("JEV reports that the available evidence is insufficient")
-	}
-
 	for _, id := range []string{"violates_explicit_constraint", "credential_probing", "persistent_security_weakening"} {
 		value, ok := assessment.Noul[id]
 		if !ok || !validProbability(value) {
@@ -75,6 +68,13 @@ func Compose(assessment contracts.Assessment, thresholds Thresholds) contracts.D
 		}
 	} else if egress >= thresholds.ReviewProbability {
 		return review("JEV is uncertain whether the action sends sensitive data externally")
+	}
+
+	if assessment.RiskConfidence < thresholds.RiskConfidence {
+		return review("JEV risk classification confidence is below the configured approval threshold")
+	}
+	if assessment.EvidenceSufficient < thresholds.EvidenceProbability {
+		return review("JEV reports that the available evidence is insufficient")
 	}
 
 	if assessment.RiskLevel == contracts.RiskCritical {

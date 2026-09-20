@@ -41,7 +41,7 @@ func TestRunTestReportsDeterministicHookAndPolicyChecks(t *testing.T) {
 	if err != nil || code != 0 {
 		t.Fatalf("run(test) = (%d, %v), stderr = %q", code, err, stderr.String())
 	}
-	for _, expected := range []string{"PASS adapter", "PASS policy allow", "PASS policy block", "SKIP live JEV"} {
+	for _, expected := range []string{"PASS adapter", "PASS policy allow", "PASS policy block", "PASS policy credential deny", "SKIP live JEV"} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Fatalf("test output missing %q: %q", expected, stdout.String())
 		}

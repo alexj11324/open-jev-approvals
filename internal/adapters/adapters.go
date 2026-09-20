@@ -35,6 +35,7 @@ func Normalize(harness contracts.Harness, raw []byte) (contracts.Action, error) 
 	if err := json.Unmarshal(event.ToolInput, &input); err != nil {
 		return contracts.Action{}, fmt.Errorf("decode tool_input: %w", err)
 	}
+	facts := actionFacts(event.ToolName, input)
 
 	return contracts.Action{
 		Harness:    harness,
@@ -48,7 +49,25 @@ func Normalize(harness contracts.Harness, raw []byte) (contracts.Action, error) 
 		ToolName:   event.ToolName,
 		Kind:       kindFor(event.ToolName),
 		Input:      input,
+		Facts:      facts,
 	}, nil
+}
+
+func actionFacts(toolName string, input map[string]any) map[string]any {
+	if toolName != "Bash" && toolName != "PowerShell" {
+		return nil
+	}
+	command, ok := input["command"].(string)
+	if !ok {
+		return nil
+	}
+	lower := strings.ToLower(command)
+	for _, indicator := range []string{"~/.ssh/id_rsa", "~/.ssh/id_ed25519", ".ssh/id_rsa", ".ssh/id_ed25519", ".aws/credentials", ".env", "private_key", "private-key"} {
+		if strings.Contains(lower, indicator) {
+			return map[string]any{"credential_path_indicators": []string{indicator}}
+		}
+	}
+	return nil
 }
 
 func kindFor(toolName string) contracts.ActionKind {

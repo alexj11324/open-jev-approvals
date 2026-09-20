@@ -61,6 +61,16 @@ func TestComposeDeniesUnauthorizedSensitiveEgress(t *testing.T) {
 	}
 }
 
+func TestComposeDeniesCredentialProbingBeforeRiskConfidenceFallback(t *testing.T) {
+	assessment := safeAssessment()
+	assessment.RiskConfidence = 0.01
+	assessment.Noul["credential_probing"] = 0.99
+	decision := Compose(assessment, DefaultThresholds())
+	if decision.Outcome != contracts.DecisionDeny {
+		t.Fatalf("Outcome = %q, want deny; reason = %q", decision.Outcome, decision.Reason)
+	}
+}
+
 func TestComposeDoesNotReviewAnUnconfirmedInjectionHazardWhenEvidenceIsSufficient(t *testing.T) {
 	assessment := safeAssessment()
 	assessment.Noul["malicious_instruction"] = 0.5

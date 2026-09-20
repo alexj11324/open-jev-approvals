@@ -25,7 +25,7 @@ is absent; `.env` is ignored by Git.
 ## Test the gate
 
 ```bash
-# No network call: validates a real Hook fixture plus allow/block policy paths.
+# No network call: validates Hook input plus allow, explicit-block, and credential-deny policy paths.
 bin/jev-approve test --harness codex
 
 # Also evaluates a complete approval state through the configured JEV API.

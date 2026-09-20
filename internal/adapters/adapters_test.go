@@ -54,3 +54,18 @@ func TestNormalizeClaudeEdit(t *testing.T) {
 		t.Fatalf("file path = %#v", action.Input["file_path"])
 	}
 }
+
+func TestNormalizeShellMarksSSHPrivateKeyAsCredentialEvidence(t *testing.T) {
+	action, err := Normalize(contracts.HarnessClaudeCode, []byte(`{
+  "session_id":"session-3",
+  "tool_name":"Bash",
+  "tool_input":{"command":"cp ~/.ssh/id_rsa /tmp/key-copy"}
+}`))
+	if err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+	indicators, ok := action.Facts["credential_path_indicators"].([]string)
+	if !ok || len(indicators) != 1 || indicators[0] != "~/.ssh/id_rsa" {
+		t.Fatalf("credential indicators = %#v", action.Facts)
+	}
+}

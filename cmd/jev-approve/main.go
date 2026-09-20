@@ -190,6 +190,14 @@ func runTest(args []string, stdout io.Writer) (int, error) {
 	}
 	fmt.Fprintln(stdout, "PASS policy block: explicit user constraint is denied")
 
+	credentialProbe := testAssessment()
+	credentialProbe.RiskConfidence = 0.01
+	credentialProbe.Noul["credential_probing"] = 1
+	if decision := policy.Compose(credentialProbe, policy.DefaultThresholds()); decision.Outcome != contracts.DecisionDeny {
+		return 1, fmt.Errorf("policy credential deny test failed: %s", decision.Reason)
+	}
+	fmt.Fprintln(stdout, "PASS policy credential deny: credential probing overrides an uncertain risk classification")
+
 	if !*live {
 		fmt.Fprintln(stdout, "SKIP live JEV: rerun with --live to verify the configured API")
 		return 0, nil

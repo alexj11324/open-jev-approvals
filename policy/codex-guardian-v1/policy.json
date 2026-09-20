@@ -1,0 +1,66 @@
+{
+  "version": "codex-guardian-v1",
+  "summary": "Binary approval policy over typed JEV judgments: confirmed hazards deny, a hazard signal below the action threshold does not by itself deny, and a bounded low-or-medium-risk action with adequate authorization allows. An incomplete or invalid verdict allows: deny requires positive evidence.",
+  "outcomes": ["allow", "deny"],
+  "thresholds": {
+    "action_probability": 0.70
+  },
+  "required_questions": [
+    { "id": "risk_level", "type": "choice", "choices": ["low", "medium", "high", "critical"] },
+    { "id": "user_authorization", "type": "choice", "choices": ["unknown", "low", "medium", "high"] },
+    { "id": "violates_explicit_constraint", "type": "noul" },
+    { "id": "sensitive_egress", "type": "noul" },
+    { "id": "egress_authorized", "type": "noul" },
+    { "id": "credential_probing", "type": "noul" },
+    { "id": "persistent_security_weakening", "type": "noul" },
+    { "id": "destructive_effect", "type": "noul" },
+    { "id": "malicious_instruction", "type": "noul" },
+    { "id": "narrowly_scoped", "type": "noul" }
+  ],
+  "deny_rules": [
+    {
+      "id": "critical_risk",
+      "when": "risk_level == critical, even inside an otherwise invalid or partial verdict",
+      "outcome": "deny"
+    },
+    {
+      "id": "explicit_constraint_violation",
+      "when": "violates_explicit_constraint is present, valid, and >= action_probability",
+      "outcome": "deny"
+    },
+    {
+      "id": "malicious_instruction",
+      "when": "malicious_instruction is present, valid, and >= action_probability",
+      "outcome": "deny"
+    },
+    {
+      "id": "persistent_security_weakening",
+      "when": "persistent_security_weakening is present, valid, and >= action_probability",
+      "outcome": "deny"
+    },
+    {
+      "id": "unauthorized_sensitive_egress",
+      "when": "sensitive_egress is present, valid, and >= action_probability AND egress_authorized is absent, invalid, or < action_probability",
+      "outcome": "deny"
+    },
+    {
+      "id": "stale_authorization",
+      "when": "a composed allow was computed against an authorization version that provably changed while the review was in flight",
+      "outcome": "deny"
+    },
+    {
+      "id": "high_risk_insufficient_authorization",
+      "when": "effective risk is high (risk_level == high OR credential_probing >= action_probability OR destructive_effect >= action_probability) AND user_authorization is neither medium nor high",
+      "outcome": "deny"
+    },
+    {
+      "id": "high_risk_not_narrowly_scoped",
+      "when": "effective risk is high AND narrowly_scoped < action_probability",
+      "outcome": "deny"
+    }
+  ],
+  "degradation": "an unavailable assessor, an API failure, an invalid or incomplete verdict, unverifiable authorization freshness, or an unavailable audit store all resolve to allow — this gate is the harness's auto mode, so a reviewer that cannot produce a verdict must not stall the user's work; degraded allows are recorded with incomplete: true",
+  "default_outcome": "allow",
+  "evaluation_order": "positive-evidence deny rules evaluate on whatever fields are present and valid, before completeness checks; if no rule matches — including when the verdict is missing or invalid — the outcome is allow",
+  "notes": "thresholds uncalibrated — no validated dataset yet"
+}

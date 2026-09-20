@@ -9,6 +9,13 @@ const (
 	HarnessClaudeCode Harness = "claude-code"
 )
 
+type HookEvent string
+
+const (
+	HookPreToolUse        HookEvent = "PreToolUse"
+	HookPermissionRequest HookEvent = "PermissionRequest"
+)
+
 type ActionKind string
 
 const (
@@ -22,6 +29,7 @@ const (
 
 type Action struct {
 	Harness      Harness        `json:"harness"`
+	HookEvent    HookEvent      `json:"hook_event_name"`
 	SessionID    string         `json:"session_id"`
 	TurnID       string         `json:"turn_id,omitempty"`
 	ToolUseID    string         `json:"tool_use_id,omitempty"`
@@ -33,6 +41,17 @@ type Action struct {
 	Kind         ActionKind     `json:"kind"`
 	Input        map[string]any `json:"input"`
 	UserMessages []string       `json:"user_messages,omitempty"`
+	Facts        map[string]any `json:"facts,omitempty"`
+	Hints        map[string]any `json:"lexical_hints,omitempty"`
+
+	// Scope is the namespaced authorization bucket the action belongs to:
+	// installation_id + harness + session_id + agent_id. Empty means the
+	// caller could not establish a scope and the review is incomplete.
+	Scope string `json:"scope,omitempty"`
+	// AuthorizationVersion snapshots the authorization stream when
+	// UserMessages were loaded. The review service re-reads the version
+	// after assessing so an ALLOW never ships against stale authorization.
+	AuthorizationVersion int64 `json:"authorization_version,omitempty"`
 }
 
 type RiskLevel string
@@ -55,11 +74,13 @@ const (
 )
 
 type Assessment struct {
-	Model         string          `json:"model"`
-	RiskLevel     RiskLevel       `json:"risk_level"`
-	Authorization Authorization   `json:"user_authorization"`
-	Outcome       DecisionOutcome `json:"outcome"`
-	Rationale     string          `json:"rationale"`
+	Model             string             `json:"model"`
+	RiskLevel         RiskLevel          `json:"risk_level"`
+	RiskConfidence    float64            `json:"risk_confidence"`
+	Authorization     Authorization      `json:"authorization"`
+	AuthorizationConf float64            `json:"authorization_confidence"`
+	NarrowlyScoped    float64            `json:"narrowly_scoped"`
+	Noul              map[string]float64 `json:"noul"`
 }
 
 type DecisionOutcome string
@@ -72,10 +93,11 @@ const (
 type Decision struct {
 	ReviewID      string          `json:"review_id,omitempty"`
 	Outcome       DecisionOutcome `json:"outcome"`
-	RiskLevel     RiskLevel       `json:"risk_level,omitempty"`
-	Authorization Authorization   `json:"user_authorization,omitempty"`
-	Rationale     string          `json:"rationale,omitempty"`
-	Model         string          `json:"model,omitempty"`
 	Reason        string          `json:"reason"`
-	CreatedAt     time.Time       `json:"created_at"`
+	PolicyVersion string          `json:"policy_version,omitempty"`
+	// Incomplete marks a decision that could not observe required context
+	// (missing authorization scope, unreadable transcript, malformed event).
+	// Incomplete decisions are never valid evidence of a trusted review.
+	Incomplete bool      `json:"incomplete,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }

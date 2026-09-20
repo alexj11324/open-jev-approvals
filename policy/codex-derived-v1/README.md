@@ -4,14 +4,15 @@ This policy package preserves the externalized ideas needed for a Hook-based
 approval gate: risk and authorization are separate, only user messages form
 authorization, and tool payloads are evidence rather than permission.
 
-This is a TypeSafe/JEV adapter for Codex Guardian's published policy at upstream
-commit `5c5308fc9a9ee789049d646ef11e5400384b9c6f`. The policy template and default
-policy are embedded byte-for-byte. The adapter supplies the Hook's tool name,
-full tool input, working directory, action identity, and captured current-turn
-user messages. JEV is the sole reviewer for those inputs.
+This is a TypeSafe/JEV implementation of Codex Guardian's published policy at
+upstream commit `5c5308fc9a9ee789049d646ef11e5400384b9c6f`. Jev cannot call read-only
+tools, so the adapter supplies the exact action, current-turn user messages, and
+verified facts. JEV is the sole reviewer; the result is always `ALLOW` or
+`DENY`.
 
-The policy is implemented by JEV's `outcome` Choice. Local code does not add
-thresholds or supplementary safety judgments.
+The policy is implemented in `internal/policy`. Its thresholds are initial,
+uncalibrated operating values and must be evaluated against labeled approvals
+before a production rollout.
 
 ## Decision semantics
 
@@ -21,14 +22,13 @@ it does not lower the action's intrinsic risk or override hard safety hazards.
 
 | Condition | Outcome |
 | --- | --- |
-| JEV returns explicit Guardian `outcome = deny` | `DENY` |
-| JEV returns explicit Guardian `outcome = allow` | `ALLOW` |
-| API, parsing, state, audit, or output failure | `ALLOW` |
+| Confirmed explicit-constraint violation, unauthorized sensitive egress, malicious injection, or unauthorized persistent security weakening | `DENY` |
+| Low or medium risk without an explicit deny rule | `ALLOW` |
+| High risk | `ALLOW` only with at least medium authorization and narrow scope |
+| Critical risk | `DENY` |
+| Invalid response, unavailable service, or failed audit write | `DENY` |
 
 Prior decisions are never authorization or precedent. Only current-turn trusted
 user messages establish authorization. Model uncertainty does not create a
-third outcome or a local block.
-
-The adapter does not receive Guardian's full in-process transcript or its
-read-only investigation tools. It also intentionally differs from upstream on
-failure handling: incomplete or unavailable review allows the action.
+third outcome: low/medium ambiguity resolves the same way, while confirmed hard
+hazards and critical risk deny.

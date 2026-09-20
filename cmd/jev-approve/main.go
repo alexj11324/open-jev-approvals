@@ -8,23 +8,27 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+	"strings"
 	"time"
 
-	"github.com/alexjiang/open-jev-approvals/internal/adapters"
-	"github.com/alexjiang/open-jev-approvals/internal/config"
-	"github.com/alexjiang/open-jev-approvals/internal/contracts"
-	installer "github.com/alexjiang/open-jev-approvals/internal/install"
-	"github.com/alexjiang/open-jev-approvals/internal/jev"
-	"github.com/alexjiang/open-jev-approvals/internal/policy"
-	"github.com/alexjiang/open-jev-approvals/internal/review"
-	"github.com/alexjiang/open-jev-approvals/internal/storage"
+	"github.com/alexj11324/open-jev-approvals/internal/adapters"
+	"github.com/alexj11324/open-jev-approvals/internal/config"
+	"github.com/alexj11324/open-jev-approvals/internal/contracts"
+	installer "github.com/alexj11324/open-jev-approvals/internal/install"
+	"github.com/alexj11324/open-jev-approvals/internal/jev"
+	"github.com/alexj11324/open-jev-approvals/internal/policy"
+	"github.com/alexj11324/open-jev-approvals/internal/review"
+	"github.com/alexj11324/open-jev-approvals/internal/storage"
 )
 
 func main() {
-	if err := loadConfiguredDotEnv(); err != nil {
+	if err := config.LoadUserEnv(); err != nil {
 		fmt.Fprintln(os.Stderr, "jev-approve:", err)
-		os.Exit(1)
+		// On interception paths a broken environment degrades to allow —
+		// the reviewer is unavailable, not a reason to stall the action.
+		if len(os.Args) <= 1 || (os.Args[1] != "hook" && os.Args[1] != "event") {
+			os.Exit(1)
+		}
 	}
 	code, err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	if err != nil {
@@ -33,26 +37,15 @@ func main() {
 	os.Exit(code)
 }
 
-func loadConfiguredDotEnv() error {
-	path := os.Getenv("JEV_APPROVALS_ENV_FILE")
-	if path == "" {
-		return nil
-	}
-	if !filepath.IsAbs(path) {
-		return errors.New("JEV_APPROVALS_ENV_FILE must be an absolute path")
-	}
-	return config.LoadDotEnv(path)
-}
-
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	if len(args) == 0 {
 		return 1, errors.New("usage: jev-approve <hook|event|probe|test|install|uninstall|status|doctor|inspect>")
 	}
 	switch args[0] {
 	case "hook":
-		return runHook(args[1:], stdin, stdout, stderr)
+		return blocking(runHook(args[1:], stdin, stdout, stderr))
 	case "event":
-		return runEvent(args[1:], stdin, stderr)
+		return blocking(runEvent(args[1:], stdin))
 	case "probe":
 		return runProbe(stdout)
 	case "test":
@@ -66,121 +59,187 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) 
 	}
 }
 
+// blocking maps a hook/event result to the harness exit code. Errors are
+// already rare here — every recoverable failure degrades to allow inside
+// runHook/runEvent — so a remaining error means even the verdict could not
+// be emitted, which stays blocking rather than silently allowing.
+func blocking(code int, err error) (int, error) {
+	if err != nil {
+		return 2, err
+	}
+	return code, nil
+}
+
+// hookDeadline budgets the whole interception from process entry so a slow
+// environment cannot push the JEV call past the harness's hook timeout.
+const hookDeadline = 8 * time.Second
+
 func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), hookDeadline)
+	defer cancel()
+
 	flags := flag.NewFlagSet("hook", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	harnessValue := flags.String("harness", "", "codex or claude-code")
 	if err := flags.Parse(args); err != nil {
-		return failOpen(stderr, err)
+		fmt.Fprintf(stderr, "jev-approve: %v; reviewer unavailable\n", err)
+		return 0, nil
 	}
 	harness, err := parseHarness(*harnessValue)
 	if err != nil {
-		return failOpen(stderr, err)
+		fmt.Fprintf(stderr, "jev-approve: %v; reviewer unavailable\n", err)
+		return 0, nil
 	}
 	raw, err := io.ReadAll(io.LimitReader(stdin, 1<<20))
 	if err != nil {
-		return failOpen(stderr, err)
+		fmt.Fprintf(stderr, "jev-approve: read hook input: %v; reviewer unavailable\n", err)
+		return 0, nil
 	}
 	action, err := adapters.Normalize(harness, raw)
 	if err != nil {
-		return failOpen(stderr, err)
-	}
-
-	store, err := storage.Open(storage.DefaultPath())
-	if err != nil {
-		return failOpen(stderr, err)
-	}
-	defer store.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	action.UserMessages, err = store.UserPrompts(ctx, action.SessionID, action.TurnID)
-	if err != nil {
-		return failOpen(stderr, fmt.Errorf("load user authorization: %w", err))
-	}
-	client, err := jev.NewFromEnv()
-	if err != nil {
-		decision := review.Service{Store: store}.Review(ctx, action)
-		return writeHookDecision(harness, decision, stdout, stderr)
-	}
-	decision := review.Service{Assessor: client, Store: store}.Review(ctx, action)
-	return writeHookDecision(harness, decision, stdout, stderr)
-}
-
-func failOpen(stderr io.Writer, err error) (int, error) {
-	fmt.Fprintf(stderr, "JEV approval unavailable; allowing action: %v\n", err)
-	return 0, nil
-}
-
-func writeHookDecision(harness contracts.Harness, decision contracts.Decision, stdout, stderr io.Writer) (int, error) {
-	if decision.Outcome != contracts.DecisionDeny {
-		if decision.Outcome != contracts.DecisionAllow {
-			return failOpen(stderr, fmt.Errorf("invalid decision outcome %q", decision.Outcome))
+		// A PermissionRequest payload that cannot be parsed still needs an
+		// explicit Codex verdict; anything else fails open silently.
+		if harness == contracts.HarnessCodex && strings.Contains(string(raw), `"PermissionRequest"`) {
+			return writeRequiredHookJSON(stdout, stderr, map[string]any{
+				"hookSpecificOutput": map[string]any{
+					"hookEventName": string(contracts.HookPermissionRequest),
+					"decision":      map[string]any{"behavior": "allow"},
+				},
+			})
 		}
+		fmt.Fprintf(stderr, "jev-approve: parse hook input: %v; reviewer unavailable\n", err)
 		return 0, nil
 	}
 
+	// Degraded reviewer paths still funnel through Review: a verdict that
+	// positively denies must deny even when the audit store is gone.
+	var store *storage.Store
+	if path, err := storage.DefaultPath(); err != nil {
+		fmt.Fprintf(stderr, "jev-approve: %v; reviewer degraded\n", err)
+	} else if s, err := storage.Open(ctx, path); err == nil {
+		store = s
+		defer store.Close()
+		if installationID, err := store.InstallationID(ctx); err == nil {
+			action.Scope = storage.ScopeKey(installationID, harness, action.SessionID, action.AgentID)
+			if messages, version, err := store.UserPrompts(ctx, action.Scope, action.TurnID); err == nil {
+				action.UserMessages, action.AuthorizationVersion = messages, version
+			} else {
+				fmt.Fprintf(stderr, "jev-approve: load user authorization: %v; reviewer degraded\n", err)
+			}
+		} else {
+			fmt.Fprintf(stderr, "jev-approve: resolve installation id: %v; reviewer degraded\n", err)
+		}
+	} else {
+		fmt.Fprintf(stderr, "jev-approve: open audit store: %v; reviewer degraded\n", err)
+	}
+	client, err := jev.NewFromEnv()
+	if err != nil {
+		decision := review.Service{Store: store, Thresholds: policy.DefaultThresholds()}.Review(ctx, action)
+		return writeHookDecision(harness, action.HookEvent, decision, stdout, stderr)
+	}
+	decision := review.Service{Assessor: client, Store: store, Thresholds: policy.DefaultThresholds()}.Review(ctx, action)
+	return writeHookDecision(harness, action.HookEvent, decision, stdout, stderr)
+}
+
+func writeHookDecision(harness contracts.Harness, event contracts.HookEvent, decision contracts.Decision, stdout, stderr io.Writer) (int, error) {
 	if harness != contracts.HarnessCodex {
+		if decision.Outcome == contracts.DecisionAllow {
+			return 0, nil
+		}
 		fmt.Fprintf(stderr, "JEV approval blocked: %s (review %s)\n", decision.Reason, decision.ReviewID)
 		return 2, nil
 	}
-	return writeBlockingHookJSON(stdout, stderr, map[string]any{
-		"hookSpecificOutput": map[string]any{
-			"hookEventName":            "PreToolUse",
-			"permissionDecision":       "deny",
-			"permissionDecisionReason": decision.Reason,
-		},
-	})
+
+	switch event {
+	case contracts.HookPreToolUse:
+		if decision.Outcome == contracts.DecisionAllow {
+			return 0, nil
+		}
+		return writeRequiredHookJSON(stdout, stderr, map[string]any{
+			"hookSpecificOutput": map[string]any{
+				"hookEventName":            string(contracts.HookPreToolUse),
+				"permissionDecision":       "deny",
+				"permissionDecisionReason": decision.Reason,
+			},
+		})
+	case contracts.HookPermissionRequest:
+		var hookDecision map[string]any
+		if decision.Outcome == contracts.DecisionAllow {
+			hookDecision = map[string]any{"behavior": "allow"}
+		} else {
+			hookDecision = map[string]any{"behavior": "deny", "message": decision.Reason}
+		}
+		return writeRequiredHookJSON(stdout, stderr, map[string]any{
+			"hookSpecificOutput": map[string]any{
+				"hookEventName": string(contracts.HookPermissionRequest),
+				"decision":      hookDecision,
+			},
+		})
+	default:
+		return 2, fmt.Errorf("unsupported hook event %q", event)
+	}
 }
 
-func writeBlockingHookJSON(stdout, stderr io.Writer, value any) (int, error) {
+func writeRequiredHookJSON(stdout, stderr io.Writer, value any) (int, error) {
 	if _, err := writeJSON(stdout, value); err != nil {
-		return failOpen(stderr, fmt.Errorf("emit deny verdict: %w", err))
+		fmt.Fprintf(stderr, "JEV approval denied: could not emit the required hook verdict: %v\n", err)
+		return 2, nil
 	}
 	return 0, nil
 }
 
-func runEvent(args []string, stdin io.Reader, stderr io.Writer) (int, error) {
+func runEvent(args []string, stdin io.Reader) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), hookDeadline)
+	defer cancel()
+
 	flags := flag.NewFlagSet("event", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	harnessValue := flags.String("harness", "", "codex or claude-code")
 	if err := flags.Parse(args); err != nil {
-		return failOpen(stderr, err)
+		return 0, nil
 	}
 	harness, err := parseHarness(*harnessValue)
 	if err != nil {
-		return failOpen(stderr, err)
+		return 0, nil
 	}
 	raw, err := io.ReadAll(io.LimitReader(stdin, 1<<20))
 	if err != nil {
-		return failOpen(stderr, err)
+		return 0, nil
 	}
 	var event struct {
 		HookEventName string `json:"hook_event_name"`
 		SessionID     string `json:"session_id"`
 		TurnID        string `json:"turn_id"`
+		AgentID       string `json:"agent_id"`
 		Prompt        string `json:"prompt"`
 		UserPrompt    string `json:"user_prompt"`
 	}
 	if err := json.Unmarshal(raw, &event); err != nil {
-		return failOpen(stderr, err)
+		return 0, nil
 	}
 	if event.HookEventName != "UserPromptSubmit" {
 		return 0, nil
-	}
-	if harness == contracts.HarnessCodex && event.TurnID == "" {
-		return failOpen(stderr, errors.New("Codex UserPromptSubmit input has no turn_id"))
 	}
 	prompt := event.Prompt
 	if prompt == "" {
 		prompt = event.UserPrompt
 	}
-	store, err := storage.Open(storage.DefaultPath())
+	path, err := storage.DefaultPath()
 	if err != nil {
-		return failOpen(stderr, err)
+		return 0, nil
+	}
+	store, err := storage.Open(ctx, path)
+	if err != nil {
+		return 0, nil
 	}
 	defer store.Close()
-	if err := store.RememberPrompt(context.Background(), event.SessionID, event.TurnID, prompt); err != nil {
-		return failOpen(stderr, err)
+	installationID, err := store.InstallationID(ctx)
+	if err != nil {
+		return 0, nil
+	}
+	scope := storage.ScopeKey(installationID, harness, event.SessionID, event.AgentID)
+	if err := store.RememberPrompt(ctx, scope, event.SessionID, event.TurnID, prompt); err != nil {
+		return 0, nil
 	}
 	return 0, nil
 }
@@ -223,23 +282,22 @@ func runTest(args []string, stdout io.Writer) (int, error) {
 	fmt.Fprintln(stdout, "PASS adapter: PreToolUse input normalized")
 
 	safe := testAssessment()
-	if decision := policy.Compose(safe); decision.Outcome != contracts.DecisionAllow {
+	if decision := policy.Compose(safe, policy.DefaultThresholds()); decision.Outcome != contracts.DecisionAllow {
 		return 1, fmt.Errorf("policy allow test failed: %s", decision.Reason)
 	}
 	fmt.Fprintln(stdout, "PASS policy allow: bounded low-risk action is allowed")
 
 	blocked := testAssessment()
-	blocked.Outcome = contracts.DecisionDeny
-	if decision := policy.Compose(blocked); decision.Outcome != contracts.DecisionDeny {
+	blocked.Noul["violates_explicit_constraint"] = 1
+	if decision := policy.Compose(blocked, policy.DefaultThresholds()); decision.Outcome != contracts.DecisionDeny {
 		return 1, fmt.Errorf("policy block test failed: %s", decision.Reason)
 	}
 	fmt.Fprintln(stdout, "PASS policy block: explicit user constraint is denied")
 
 	credentialProbe := testAssessment()
-	credentialProbe.RiskLevel = contracts.RiskHigh
-	credentialProbe.Authorization = contracts.AuthorizationLow
-	credentialProbe.Outcome = contracts.DecisionDeny
-	if decision := policy.Compose(credentialProbe); decision.Outcome != contracts.DecisionDeny {
+	credentialProbe.RiskConfidence = 0.01
+	credentialProbe.Noul["credential_probing"] = 1
+	if decision := policy.Compose(credentialProbe, policy.DefaultThresholds()); decision.Outcome != contracts.DecisionDeny {
 		return 1, fmt.Errorf("policy credential deny test failed: %s", decision.Reason)
 	}
 	fmt.Fprintln(stdout, "PASS policy credential deny: credential probing overrides an uncertain risk classification")
@@ -259,7 +317,7 @@ func runTest(args []string, stdout io.Writer) (int, error) {
 	if err != nil {
 		return 1, fmt.Errorf("live JEV approval test failed: %w", err)
 	}
-	decision := policy.Compose(assessment)
+	decision := policy.Compose(assessment, policy.DefaultThresholds())
 	fmt.Fprintf(stdout, "PASS live JEV: model=%s outcome=%s\n", assessment.Model, decision.Outcome)
 	return 0, nil
 }
@@ -271,9 +329,20 @@ func hookTestFixture(harness contracts.Harness) []byte {
 
 func testAssessment() contracts.Assessment {
 	return contracts.Assessment{
-		RiskLevel:     contracts.RiskLow,
-		Authorization: contracts.AuthorizationLow,
-		Outcome:       contracts.DecisionAllow,
+		RiskLevel:         contracts.RiskLow,
+		RiskConfidence:    0.99,
+		Authorization:     contracts.AuthorizationLow,
+		AuthorizationConf: 0.99,
+		NarrowlyScoped:    0.99,
+		Noul: map[string]float64{
+			"violates_explicit_constraint":  0,
+			"sensitive_egress":              0,
+			"egress_authorized":             1,
+			"credential_probing":            0,
+			"persistent_security_weakening": 0,
+			"destructive_effect":            0,
+			"malicious_instruction":         0,
+		},
 	}
 }
 
@@ -323,13 +392,14 @@ func runManagement(args []string, stdout io.Writer) (int, error) {
 		if err != nil {
 			return 1, err
 		}
-		if !status.Installed {
+		if !status.Installed || status.Malformed != "" {
 			return 1, fmt.Errorf("JEV hooks are not installed in %s", status.ConfigPath)
 		}
 		if *live {
 			return runProbe(stdout)
 		}
-		fmt.Fprintf(stdout, "JEV hooks found in %s; run doctor --live to verify the API.\n", status.ConfigPath)
+		fmt.Fprintf(stdout, "JEV hooks found in %s (events: %s); run doctor --live to verify the API.\n",
+			status.ConfigPath, strings.Join(status.Events, ", "))
 	}
 	return 0, nil
 }
@@ -338,7 +408,11 @@ func runInspect(args []string, stdout io.Writer) (int, error) {
 	if len(args) != 1 {
 		return 1, errors.New("usage: jev-approve inspect <review-id>")
 	}
-	store, err := storage.Open(storage.DefaultPath())
+	path, err := storage.DefaultPath()
+	if err != nil {
+		return 1, err
+	}
+	store, err := storage.Open(context.Background(), path)
 	if err != nil {
 		return 1, err
 	}

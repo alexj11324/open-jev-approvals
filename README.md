@@ -39,9 +39,6 @@ The local policy (`policy/codex-guardian-v1`) combines those probabilities:
 Denies are recorded per call and don't affect later calls in the same
 session.
 
-The policy is derived from Codex Guardian (upstream commit `5c5308f`,
-Apache-2.0) and reimplemented here.
-
 ## Install
 
 ```bash

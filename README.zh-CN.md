@@ -32,9 +32,6 @@ harness 自带的审批流程用不了，所以由这个门来代替：Jev 充�
 
 拒绝是按单次调用记录的，不会影响同一 session 里的后续调用。
 
-本政策衍生自 Codex Guardian（上游 commit `5c5308f`，Apache-2.0），此处
-为重新实现。
-
 ## 安装
 
 ```bash

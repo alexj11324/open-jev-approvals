@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/alexj11324/open-jev-approvals/internal/adapters"
@@ -42,9 +43,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) 
 	}
 	switch args[0] {
 	case "hook":
-		return runHook(args[1:], stdin, stdout, stderr)
+		return blocking(runHook(args[1:], stdin, stdout, stderr))
 	case "event":
-		return runEvent(args[1:], stdin)
+		return blocking(runEvent(args[1:], stdin))
 	case "probe":
 		return runProbe(stdout)
 	case "test":
@@ -56,6 +57,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) 
 	default:
 		return 1, fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+// blocking maps a hook/event result to the fail-closed exit code: any error
+// on an interception path exits 2 so a half-handled action can never read
+// as an allow.
+func blocking(code int, err error) (int, error) {
+	if err != nil {
+		return 2, err
+	}
+	return code, nil
 }
 
 // hookDeadline budgets the whole interception from process entry so a slow
@@ -182,7 +193,7 @@ func runEvent(args []string, stdin io.Reader) (int, error) {
 		UserPrompt    string `json:"user_prompt"`
 	}
 	if err := json.Unmarshal(raw, &event); err != nil {
-		return 0, err
+		return 2, err
 	}
 	if event.HookEventName != "UserPromptSubmit" {
 		return 0, nil
@@ -355,13 +366,14 @@ func runManagement(args []string, stdout io.Writer) (int, error) {
 		if err != nil {
 			return 1, err
 		}
-		if !status.Installed {
+		if !status.Installed || status.Malformed != "" {
 			return 1, fmt.Errorf("JEV hooks are not installed in %s", status.ConfigPath)
 		}
 		if *live {
 			return runProbe(stdout)
 		}
-		fmt.Fprintf(stdout, "JEV hooks found in %s; run doctor --live to verify the API.\n", status.ConfigPath)
+		fmt.Fprintf(stdout, "JEV hooks found in %s (events: %s); run doctor --live to verify the API.\n",
+			status.ConfigPath, strings.Join(status.Events, ", "))
 	}
 	return 0, nil
 }

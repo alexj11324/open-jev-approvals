@@ -30,7 +30,7 @@ func TestUserPromptsScopesAuthorizationToCurrentTurn(t *testing.T) {
 	}
 }
 
-func TestUserPromptsWithoutTurnIDUsesLatestPrompt(t *testing.T) {
+func TestUserPromptsWithoutTurnIDDoesNotReusePriorAuthorization(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +49,7 @@ func TestUserPromptsWithoutTurnIDUsesLatestPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(prompts) != 1 || prompts[0] != "Current prompt" {
-		t.Fatalf("legacy prompts = %#v", prompts)
+	if len(prompts) != 0 {
+		t.Fatalf("prompts = %#v, want no authorization", prompts)
 	}
 }

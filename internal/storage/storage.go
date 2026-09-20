@@ -63,15 +63,11 @@ func (s *Store) RememberPrompt(ctx context.Context, sessionID, turnID, prompt st
 }
 
 func (s *Store) UserPrompts(ctx context.Context, sessionID, turnID string) ([]string, error) {
-	if sessionID == "" {
+	if sessionID == "" || turnID == "" {
 		return nil, nil
 	}
 	query := `SELECT prompt FROM user_prompts WHERE session_id = ? AND turn_id = ? ORDER BY id`
 	args := []any{sessionID, turnID}
-	if turnID == "" {
-		query = `SELECT prompt FROM user_prompts WHERE session_id = ? ORDER BY id DESC LIMIT 1`
-		args = []any{sessionID}
-	}
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -181,9 +177,6 @@ func redactAction(action contracts.Action) contracts.Action {
 		copy.UserMessages = append(copy.UserMessages, redact(message))
 	}
 	copy.Input = redactValue(action.Input).(map[string]any)
-	if action.Facts != nil {
-		copy.Facts = redactValue(action.Facts).(map[string]any)
-	}
 	return copy
 }
 

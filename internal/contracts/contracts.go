@@ -33,7 +33,6 @@ type Action struct {
 	Kind         ActionKind     `json:"kind"`
 	Input        map[string]any `json:"input"`
 	UserMessages []string       `json:"user_messages,omitempty"`
-	Facts        map[string]any `json:"facts,omitempty"`
 }
 
 type RiskLevel string
@@ -56,28 +55,27 @@ const (
 )
 
 type Assessment struct {
-	Model              string             `json:"model"`
-	RiskLevel          RiskLevel          `json:"risk_level"`
-	RiskConfidence     float64            `json:"risk_confidence"`
-	Authorization      Authorization      `json:"authorization"`
-	AuthorizationConf  float64            `json:"authorization_confidence"`
-	EvidenceSufficient float64            `json:"evidence_sufficient"`
-	NarrowlyScoped     float64            `json:"narrowly_scoped"`
-	Noul               map[string]float64 `json:"noul"`
+	Model         string          `json:"model"`
+	RiskLevel     RiskLevel       `json:"risk_level"`
+	Authorization Authorization   `json:"user_authorization"`
+	Outcome       DecisionOutcome `json:"outcome"`
+	Rationale     string          `json:"rationale"`
 }
 
 type DecisionOutcome string
 
 const (
-	DecisionAllow          DecisionOutcome = "allow"
-	DecisionDeny           DecisionOutcome = "deny"
-	DecisionReviewRequired DecisionOutcome = "review_required"
-	DecisionError          DecisionOutcome = "error"
+	DecisionAllow DecisionOutcome = "allow"
+	DecisionDeny  DecisionOutcome = "deny"
 )
 
 type Decision struct {
-	ReviewID  string          `json:"review_id,omitempty"`
-	Outcome   DecisionOutcome `json:"outcome"`
-	Reason    string          `json:"reason"`
-	CreatedAt time.Time       `json:"created_at"`
+	ReviewID      string          `json:"review_id,omitempty"`
+	Outcome       DecisionOutcome `json:"outcome"`
+	RiskLevel     RiskLevel       `json:"risk_level,omitempty"`
+	Authorization Authorization   `json:"user_authorization,omitempty"`
+	Rationale     string          `json:"rationale,omitempty"`
+	Model         string          `json:"model,omitempty"`
+	Reason        string          `json:"reason"`
+	CreatedAt     time.Time       `json:"created_at"`
 }

@@ -75,3 +75,29 @@ structure; `jev.Assess` redacts before serialization and
 
 **Rule:** redaction happens at the trust boundary — before any bytes leave
 the process or hit disk — never "later in the pipeline".
+
+## 6. Cold-open races survive in-process tests
+
+The WAL + busy_timeout fix above passed the in-process concurrency test, but
+a real 20-process cold start still failed: `journal_mode(WAL)` does not honor
+`busy_timeout` during the transition, and `InstallationID` raced on
+`INSERT INTO meta` (UNIQUE constraint). Two fresh-open processes also
+interleaved CREATE/ALTER.
+
+**Fix:** pragmas applied in a fixed order via `db.Exec` (busy_timeout before
+journal_mode), schema setup inside `BEGIN IMMEDIATE … COMMIT` (which does
+honor busy_timeout), `journal_mode` retried on transient locks, and
+installation id via `INSERT OR IGNORE` + re-read.
+
+**Rule:** verify concurrency at the process level on a *fresh* database file,
+not only with shared handles in one test process.
+
+## 7. Harness hook scope is session-root, not cwd
+
+Devin subagent tool calls do not load `.claude/settings.json` from their
+working directory — hooks are bound to the session that owns the agent.
+Real end-to-end verification therefore uses `devin -p` as its own session
+inside an isolated project, not a subagent with a different cwd.
+
+**Rule:** to verify hook enforcement end to end, spawn a real harness
+process whose session root is the isolated directory.

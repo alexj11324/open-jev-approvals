@@ -100,6 +100,10 @@ go build ./... && go test ./... && go test -race ./internal/...
 go run ./eval
 ```
 
+## 社区
+
+本项目认可 [LINUX DO](https://linux.do)。
+
 ## 许可证
 
 [MIT](LICENSE)

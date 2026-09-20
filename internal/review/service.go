@@ -57,6 +57,16 @@ func (s Service) verifyAuthorizationFresh(ctx context.Context, action contracts.
 			Incomplete:    true,
 		}
 	}
+	// A missing audit store must not panic here; record() below reports the
+	// same denial reason, so stay fail-closed.
+	if s.Store == nil {
+		return contracts.Decision{
+			Outcome:       contracts.DecisionDeny,
+			Reason:        "approval audit store is unavailable",
+			PolicyVersion: policy.Version,
+			Incomplete:    true,
+		}
+	}
 	current, err := s.Store.AuthorizationVersion(ctx, action.Scope)
 	if err != nil {
 		return contracts.Decision{

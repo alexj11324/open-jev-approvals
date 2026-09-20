@@ -85,14 +85,16 @@ live test proves that JEV returned valid typed answers and that the local
 policy could compose them.
 
 `scripts/test-codex-hook.sh` is the runtime acceptance test. It builds the
-binary, creates an isolated temporary Git repository, installs a Codex hook
-there, and runs a safe `touch` through `codex exec`. It then sends an exact
-Codex `PreToolUse` credential-copy payload to the same binary and requires
-`deny`, then submits a normal action in the same session and requires
-`allow`. Finally, it submits an exact `PermissionRequest` payload and
-requires a direct JEV `allow` verdict. It requires an authenticated Codex
-CLI and a configured `TYPESAFE_API_KEY`; its targets are disposable
-temporary paths.
+binary into a path containing a space, installs the hook into an isolated
+temporary repository, and exercises install/idempotency/status/doctor/
+uninstall plus real `PreToolUse` and `PermissionRequest` payloads against
+the built binary. It never touches a real credential: it uses a fake API
+key, an unreachable endpoint, and a fake `id_rsa` inside the temp dir, and
+asserts that denied actions leave no filesystem side effects and that every
+decision is audited against its `tool_use_id`. With `RUN_LIVE=1` and a real
+`TYPESAFE_API_KEY` it additionally runs `codex exec` end to end and requires
+live `allow` verdicts; without it the run is offline and asserts the
+fail-closed denies.
 
 ## Install a hook
 

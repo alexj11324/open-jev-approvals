@@ -1,14 +1,18 @@
 package adapters
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"regexp"
 	"strings"
 
 	"github.com/alexjiang/open-jev-approvals/internal/contracts"
 )
 
 type hookInput struct {
+	HookEventName  string          `json:"hook_event_name"`
 	SessionID      string          `json:"session_id"`
 	TurnID         string          `json:"turn_id"`
 	ToolUseID      string          `json:"tool_use_id"`
@@ -22,18 +26,31 @@ type hookInput struct {
 
 func Normalize(harness contracts.Harness, raw []byte) (contracts.Action, error) {
 	var event hookInput
-	if err := json.Unmarshal(raw, &event); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&event); err != nil {
 		return contracts.Action{}, fmt.Errorf("decode hook input: %w", err)
+	}
+	if err := ensureEOF(decoder); err != nil {
+		return contracts.Action{}, err
+	}
+	if event.HookEventName != "PreToolUse" {
+		return contracts.Action{}, fmt.Errorf("hook input event is %q, want PreToolUse", event.HookEventName)
 	}
 	if event.ToolName == "" {
 		return contracts.Action{}, fmt.Errorf("hook input has no tool_name")
 	}
 	if len(event.ToolInput) == 0 || string(event.ToolInput) == "null" {
-		event.ToolInput = json.RawMessage(`{}`)
+		return contracts.Action{}, fmt.Errorf("hook input has no tool_input")
 	}
 	input := map[string]any{}
-	if err := json.Unmarshal(event.ToolInput, &input); err != nil {
+	inputDecoder := json.NewDecoder(bytes.NewReader(event.ToolInput))
+	inputDecoder.UseNumber()
+	if err := inputDecoder.Decode(&input); err != nil {
 		return contracts.Action{}, fmt.Errorf("decode tool_input: %w", err)
+	}
+	if err := validateInput(event.ToolName, input); err != nil {
+		return contracts.Action{}, err
 	}
 	facts := actionFacts(event.ToolName, input)
 
@@ -53,6 +70,32 @@ func Normalize(harness contracts.Harness, raw []byte) (contracts.Action, error) 
 	}, nil
 }
 
+func ensureEOF(decoder *json.Decoder) error {
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("hook input contains multiple JSON values")
+		}
+		return fmt.Errorf("decode trailing hook input: %w", err)
+	}
+	return nil
+}
+
+func validateInput(toolName string, input map[string]any) error {
+	if input == nil {
+		return fmt.Errorf("hook input tool_input must be an object")
+	}
+	if toolName == "Bash" || toolName == "PowerShell" || toolName == "apply_patch" {
+		command, ok := input["command"].(string)
+		if !ok || strings.TrimSpace(command) == "" {
+			return fmt.Errorf("hook input for %s has no command", toolName)
+		}
+	}
+	return nil
+}
+
+var dotenvPathPattern = regexp.MustCompile(`(?i)(^|[\s'"=/])\.env(?:\.[a-z0-9_-]+)?($|[\s'"/])`)
+
 func actionFacts(toolName string, input map[string]any) map[string]any {
 	if toolName != "Bash" && toolName != "PowerShell" {
 		return nil
@@ -62,10 +105,13 @@ func actionFacts(toolName string, input map[string]any) map[string]any {
 		return nil
 	}
 	lower := strings.ToLower(command)
-	for _, indicator := range []string{"~/.ssh/id_rsa", "~/.ssh/id_ed25519", ".ssh/id_rsa", ".ssh/id_ed25519", ".aws/credentials", ".env", "private_key", "private-key"} {
+	for _, indicator := range []string{"~/.ssh/id_rsa", "~/.ssh/id_ed25519", ".ssh/id_rsa", ".ssh/id_ed25519", ".aws/credentials", "private_key", "private-key"} {
 		if strings.Contains(lower, indicator) {
 			return map[string]any{"credential_path_indicators": []string{indicator}}
 		}
+	}
+	if dotenvPathPattern.MatchString(lower) {
+		return map[string]any{"credential_path_indicators": []string{".env"}}
 	}
 	return nil
 }

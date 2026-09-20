@@ -1,6 +1,7 @@
 package adapters
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/alexjiang/open-jev-approvals/internal/contracts"
@@ -8,6 +9,7 @@ import (
 
 func TestNormalizeCodexBash(t *testing.T) {
 	action, err := Normalize(contracts.HarnessCodex, []byte(`{
+  "hook_event_name":"PreToolUse",
   "session_id":"session-1",
   "turn_id":"turn-1",
   "tool_use_id":"tool-1",
@@ -32,6 +34,7 @@ func TestNormalizeCodexBash(t *testing.T) {
 
 func TestNormalizeClaudeEdit(t *testing.T) {
 	action, err := Normalize(contracts.HarnessClaudeCode, []byte(`{
+  "hook_event_name":"PreToolUse",
   "session_id":"session-2",
   "transcript_path":"/tmp/transcript.jsonl",
   "cwd":"/workspace",
@@ -57,6 +60,7 @@ func TestNormalizeClaudeEdit(t *testing.T) {
 
 func TestNormalizeShellMarksSSHPrivateKeyAsCredentialEvidence(t *testing.T) {
 	action, err := Normalize(contracts.HarnessClaudeCode, []byte(`{
+  "hook_event_name":"PreToolUse",
   "session_id":"session-3",
   "tool_name":"Bash",
   "tool_input":{"command":"cp ~/.ssh/id_rsa /tmp/key-copy"}
@@ -67,5 +71,49 @@ func TestNormalizeShellMarksSSHPrivateKeyAsCredentialEvidence(t *testing.T) {
 	indicators, ok := action.Facts["credential_path_indicators"].([]string)
 	if !ok || len(indicators) != 1 || indicators[0] != "~/.ssh/id_rsa" {
 		t.Fatalf("credential indicators = %#v", action.Facts)
+	}
+}
+
+func TestNormalizePreservesLargeJSONNumber(t *testing.T) {
+	action, err := Normalize(contracts.HarnessCodex, []byte(`{
+  "hook_event_name":"PreToolUse",
+  "session_id":"session-4",
+  "tool_name":"mcp__objects__get",
+  "tool_input":{"object_id":9007199254740993}
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := action.Input["object_id"].(json.Number).String(); got != "9007199254740993" {
+		t.Fatalf("object_id = %q", got)
+	}
+}
+
+func TestNormalizeDoesNotTreatOsEnvironAsDotenvPath(t *testing.T) {
+	action, err := Normalize(contracts.HarnessCodex, []byte(`{
+  "hook_event_name":"PreToolUse",
+  "session_id":"session-5",
+  "tool_name":"Bash",
+  "tool_input":{"command":"python3 -c 'import os; print(os.environ.get(\"PATH\"))'"}
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Facts != nil {
+		t.Fatalf("facts = %#v, want nil", action.Facts)
+	}
+}
+
+func TestNormalizeRejectsMissingToolInput(t *testing.T) {
+	_, err := Normalize(contracts.HarnessCodex, []byte(`{"hook_event_name":"PreToolUse","tool_name":"Bash"}`))
+	if err == nil {
+		t.Fatal("Normalize() error = nil")
+	}
+}
+
+func TestNormalizeRejectsWrongHookEvent(t *testing.T) {
+	_, err := Normalize(contracts.HarnessCodex, []byte(`{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"true"}}`))
+	if err == nil {
+		t.Fatal("Normalize() error = nil")
 	}
 }

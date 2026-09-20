@@ -82,7 +82,10 @@ questions. Local `codex-derived-v1` policy owns the outcome:
 - Critical risk, explicit-constraint violations, unauthorized sensitive egress,
   credential probing, and unauthorized persistent security weakening are denied.
 - High-risk work requires high, sufficiently confident authorization and a
-  narrow scope. Missing evidence and errors fail closed.
+  narrow scope. Missing evidence for non-low-risk work and runtime errors fail
+  closed.
+- Low-risk actions with complete tool input and no confirmed hazard are not
+  blocked solely by an uncertain general evidence-sufficiency judgment.
 
 The current thresholds are intentionally marked uncalibrated: safety hazards
 deny at `0.70`; low-risk evidence sufficiency permits at `0.60`; high-risk

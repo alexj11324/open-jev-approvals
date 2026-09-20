@@ -220,7 +220,7 @@ func runTest(args []string, stdout io.Writer) (int, error) {
 }
 
 func hookTestFixture(harness contracts.Harness) []byte {
-	return []byte(fmt.Sprintf(`{"session_id":"test-session","turn_id":"test-turn","tool_use_id":"test-tool","cwd":"/workspace","permission_mode":"bypassPermissions","tool_name":"Bash","tool_input":{"command":"git status --short"}%s}`,
+	return []byte(fmt.Sprintf(`{"hook_event_name":"PreToolUse","session_id":"test-session","turn_id":"test-turn","tool_use_id":"test-tool","cwd":"/workspace","permission_mode":"bypassPermissions","tool_name":"Bash","tool_input":{"command":"git status --short"}%s}`,
 		map[bool]string{true: `,"agent_id":"test-agent"`, false: ""}[harness == contracts.HarnessClaudeCode]))
 }
 

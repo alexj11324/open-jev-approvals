@@ -53,6 +53,9 @@ func Compose(assessment contracts.Assessment, thresholds Thresholds) contracts.D
 	if maliciousInstruction >= thresholds.ActionProbability {
 		return deny("JEV identified malicious instructions that induce an unauthorized action")
 	}
+	if maliciousInstruction >= thresholds.ReviewProbability {
+		return review("JEV is uncertain whether untrusted content contains malicious instructions")
+	}
 
 	egress, ok := assessment.Noul["sensitive_egress"]
 	if !ok || !validProbability(egress) {
@@ -77,7 +80,7 @@ func Compose(assessment contracts.Assessment, thresholds Thresholds) contracts.D
 	if assessment.RiskConfidence < thresholds.RiskConfidence {
 		return review("JEV risk classification confidence is below the configured approval threshold")
 	}
-	if assessment.EvidenceSufficient < thresholds.EvidenceProbability {
+	if assessment.EvidenceSufficient < thresholds.EvidenceProbability && assessment.RiskLevel != contracts.RiskLow {
 		return review("JEV reports that the available evidence is insufficient")
 	}
 

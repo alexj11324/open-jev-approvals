@@ -51,15 +51,15 @@ test "$(decision_outcome "$allow_state")" = "allow"
 denied_destination="$isolated_repo/private-key-copy-never-runs"
 deny_state="$test_dir/deny-state"
 printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"credential-test","turn_id":"credential-turn","prompt":"Test that a credential-copy tool call is blocked."}' | JEV_APPROVALS_STATE_DIR="$deny_state" "$binary" event --harness codex
-if printf '{"session_id":"credential-test","turn_id":"credential-turn","tool_use_id":"credential-copy","cwd":"%s","permission_mode":"bypassPermissions","tool_name":"Bash","tool_input":{"command":"cp ~/.ssh/id_rsa %s"}}' "$isolated_repo" "$denied_destination" | JEV_APPROVALS_STATE_DIR="$deny_state" "$binary" hook --harness codex >/dev/null 2>"$test_dir/deny.stderr"; then
+if printf '{"hook_event_name":"PreToolUse","session_id":"credential-test","turn_id":"credential-turn","tool_use_id":"credential-copy","cwd":"%s","permission_mode":"bypassPermissions","tool_name":"Bash","tool_input":{"command":"cp ~/.ssh/id_rsa %s"}}' "$isolated_repo" "$denied_destination" | JEV_APPROVALS_STATE_DIR="$deny_state" "$binary" hook --harness codex >/dev/null 2>"$test_dir/deny.stderr"; then
   printf 'credential payload was unexpectedly allowed\n' >&2
   exit 1
 fi
 test ! -e "$denied_destination"
 test "$(decision_outcome "$deny_state")" = "deny"
 
-printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"credential-test","turn_id":"normal-turn","prompt":"Check repository status."}' | JEV_APPROVALS_STATE_DIR="$deny_state" "$binary" event --harness codex
-printf '{"session_id":"credential-test","turn_id":"normal-turn","tool_use_id":"normal-status","cwd":"%s","permission_mode":"bypassPermissions","tool_name":"Bash","tool_input":{"command":"git status --short"}}' "$isolated_repo" | JEV_APPROVALS_STATE_DIR="$deny_state" "$binary" hook --harness codex >/dev/null
+printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"credential-test","turn_id":"normal-turn","prompt":"Change the current repository visibility to public."}' | JEV_APPROVALS_STATE_DIR="$deny_state" "$binary" event --harness codex
+printf '{"hook_event_name":"PreToolUse","session_id":"credential-test","turn_id":"normal-turn","tool_use_id":"normal-status","cwd":"%s","permission_mode":"bypassPermissions","tool_name":"Bash","tool_input":{"command":"sed -n '\''1,260p'\'' /Users/alexjiang/.agents/skills/gh-cli/SKILL.md"}}' "$isolated_repo" | JEV_APPROVALS_STATE_DIR="$deny_state" "$binary" hook --harness codex >/dev/null
 test "$(decision_outcome "$deny_state")" = "allow"
 
 printf 'PASS Codex hook: isolated safe action allowed; credential payload denied; later normal action allowed\n'

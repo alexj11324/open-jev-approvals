@@ -12,3 +12,23 @@ service or audit store fails, the Hook exits `2`.
 The policy is implemented in `internal/policy`. Its thresholds are initial,
 uncalibrated operating values and must be evaluated against labeled approvals
 before a production rollout.
+
+## Decision semantics
+
+Risk and authorization are independent. Explicit user authorization can raise
+the authorization level for the concrete action, target, parameters, and turn;
+it does not lower the action's intrinsic risk or override hard safety hazards.
+
+| Condition | Outcome |
+| --- | --- |
+| Confirmed explicit-constraint violation, credential probing, unauthorized sensitive egress, or persistent security weakening | `DENY` |
+| Uncertain critical hazard | `REVIEW_REQUIRED` |
+| Low-risk action with concrete tool input and no confirmed hazard | `ALLOW`, even when the general evidence-sufficiency judgment is uncertain |
+| Medium/high-risk action with insufficient evidence | `REVIEW_REQUIRED` |
+| High-risk action | Requires high, confident, narrowly scoped authorization |
+
+The low-risk evidence rule prevents a broad uncertainty question from blocking
+routine preparatory reads. It does not make Jev's risk classification a
+deterministic security boundary. A production policy still needs a separately
+verified reversibility/effect class for each tool action, with Jev contributing
+semantic signals to that code-owned policy.

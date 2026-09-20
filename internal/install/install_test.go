@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/alexjiang/open-jev-approvals/internal/contracts"
+	"github.com/alexj11324/open-jev-approvals/internal/contracts"
 )
 
 func TestInstallIsIdempotentAndPreservesHarnessSettings(t *testing.T) {

@@ -9,14 +9,23 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/alexjiang/open-jev-approvals/internal/contracts"
+	"github.com/alexj11324/open-jev-approvals/internal/contracts"
+	"github.com/alexj11324/open-jev-approvals/internal/policy"
+	"github.com/alexj11324/open-jev-approvals/internal/sanitize"
 )
 
 const defaultBaseURL = "https://api.typesafe.ai/v1/systemone"
+
+// defaultModel is the pinned JEV model alias this gate was tested against.
+// TYPESAFE_MODEL may override it, but the resolved model in every response is
+// still validated (must be a jev-* model) so an arbitrary or misconfigured
+// model can never produce approvals.
+const defaultModel = "jev-latest"
 
 type Question struct {
 	Type         string `json:"type"`
@@ -59,15 +68,56 @@ func NewFromEnv() (*Client, error) {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
+	if err := validateEndpoint(baseURL); err != nil {
+		return nil, err
+	}
 	model := os.Getenv("TYPESAFE_MODEL")
 	if model == "" {
-		model = "jev-latest"
+		model = defaultModel
 	}
-	return &Client{APIKey: key, BaseURL: baseURL, Model: model, HTTPClient: &http.Client{Timeout: 5 * time.Second}}, nil
+	httpClient := &http.Client{
+		Timeout: 5 * time.Second,
+		// The API key must never follow a redirect to another origin.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if origin(req.URL) != origin(via[0].URL) {
+				return fmt.Errorf("refusing cross-origin redirect to %s", req.URL.Host)
+			}
+			if len(via) >= 5 {
+				return errors.New("too many redirects")
+			}
+			return nil
+		},
+	}
+	return &Client{APIKey: key, BaseURL: baseURL, Model: model, HTTPClient: httpClient}, nil
+}
+
+// validateEndpoint enforces a trusted HTTPS approval endpoint: no cleartext
+// HTTP, no embedded credentials, no query/fragment tricks.
+func validateEndpoint(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return fmt.Errorf("TYPESAFE_API_BASE_URL is not a valid URL")
+	}
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("TYPESAFE_API_BASE_URL must use https, got %q", parsed.Scheme)
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("TYPESAFE_API_BASE_URL must not embed credentials")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("TYPESAFE_API_BASE_URL must not contain a query or fragment")
+	}
+	return nil
+}
+
+func origin(u *url.URL) string {
+	return strings.ToLower(u.Scheme + "://" + u.Host)
 }
 
 func (c *Client) Assess(ctx context.Context, action contracts.Action) (contracts.Assessment, error) {
-	request := BuildApprovalRequest(action)
+	// Redact before the request is serialized: a secret in a command or patch
+	// must never leave the process even when the action is later denied.
+	request := BuildApprovalRequest(sanitize.RedactAction(action))
 	request.Model = c.Model
 	response, err := c.evaluate(ctx, request)
 	if err != nil {
@@ -155,10 +205,11 @@ func BuildApprovalRequest(action contracts.Action) Request {
 		},
 		"user_authorization":         action.UserMessages,
 		"verified_facts":             action.Facts,
+		"lexical_hints":              action.Hints,
 		"untrusted_instruction_text": untrustedInstructionText,
-		"policy":                     "codex-derived-v1",
+		"policy":                     policy.Document(),
 	}
-	return Request{State: state, Model: "jev-latest", Questions: approvalQuestions()}
+	return Request{State: state, Model: defaultModel, Questions: approvalQuestions()}
 }
 
 func RequiredQuestionIDs() []string {

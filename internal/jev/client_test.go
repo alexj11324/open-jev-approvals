@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alexjiang/open-jev-approvals/internal/contracts"
+	"github.com/alexj11324/open-jev-approvals/internal/contracts"
 )
 
 func TestApprovalRequestHasIndependentSafetyQuestions(t *testing.T) {

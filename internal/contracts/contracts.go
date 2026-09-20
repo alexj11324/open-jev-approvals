@@ -42,6 +42,16 @@ type Action struct {
 	Input        map[string]any `json:"input"`
 	UserMessages []string       `json:"user_messages,omitempty"`
 	Facts        map[string]any `json:"facts,omitempty"`
+	Hints        map[string]any `json:"lexical_hints,omitempty"`
+
+	// Scope is the namespaced authorization bucket the action belongs to:
+	// installation_id + harness + session_id + agent_id. Empty means the
+	// caller could not establish a scope and the review is incomplete.
+	Scope string `json:"scope,omitempty"`
+	// AuthorizationVersion snapshots the authorization stream when
+	// UserMessages were loaded. The review service re-reads the version
+	// after assessing so an ALLOW never ships against stale authorization.
+	AuthorizationVersion int64 `json:"authorization_version,omitempty"`
 }
 
 type RiskLevel string
@@ -81,8 +91,13 @@ const (
 )
 
 type Decision struct {
-	ReviewID  string          `json:"review_id,omitempty"`
-	Outcome   DecisionOutcome `json:"outcome"`
-	Reason    string          `json:"reason"`
-	CreatedAt time.Time       `json:"created_at"`
+	ReviewID      string          `json:"review_id,omitempty"`
+	Outcome       DecisionOutcome `json:"outcome"`
+	Reason        string          `json:"reason"`
+	PolicyVersion string          `json:"policy_version,omitempty"`
+	// Incomplete marks a decision that could not observe required context
+	// (missing authorization scope, unreadable transcript, malformed event).
+	// Incomplete decisions are never valid evidence of a trusted review.
+	Incomplete bool      `json:"incomplete,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }

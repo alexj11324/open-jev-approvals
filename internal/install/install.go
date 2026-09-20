@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/alexjiang/open-jev-approvals/internal/contracts"
+	"github.com/alexj11324/open-jev-approvals/internal/contracts"
 )
 
 type Status struct {

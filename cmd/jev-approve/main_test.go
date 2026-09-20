@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alexjiang/open-jev-approvals/internal/contracts"
-	"github.com/alexjiang/open-jev-approvals/internal/storage"
+	"github.com/alexj11324/open-jev-approvals/internal/contracts"
+	"github.com/alexj11324/open-jev-approvals/internal/storage"
 )
 
 type failingWriter struct{}
@@ -33,7 +33,12 @@ func TestEventAcceptsInstalledHarnessArgumentAndStoresPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	prompts, err := store.UserPrompts(context.Background(), "session-1", "turn-1")
+	installationID, err := store.InstallationID(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := storage.ScopeKey(installationID, contracts.HarnessCodex, "session-1", "")
+	prompts, _, err := store.UserPrompts(context.Background(), scope, "turn-1")
 	if err != nil {
 		t.Fatal(err)
 	}

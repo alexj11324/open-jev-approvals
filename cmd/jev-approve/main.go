@@ -10,19 +10,23 @@ import (
 	"os"
 	"time"
 
-	"github.com/alexjiang/open-jev-approvals/internal/adapters"
-	"github.com/alexjiang/open-jev-approvals/internal/config"
-	"github.com/alexjiang/open-jev-approvals/internal/contracts"
-	installer "github.com/alexjiang/open-jev-approvals/internal/install"
-	"github.com/alexjiang/open-jev-approvals/internal/jev"
-	"github.com/alexjiang/open-jev-approvals/internal/policy"
-	"github.com/alexjiang/open-jev-approvals/internal/review"
-	"github.com/alexjiang/open-jev-approvals/internal/storage"
+	"github.com/alexj11324/open-jev-approvals/internal/adapters"
+	"github.com/alexj11324/open-jev-approvals/internal/config"
+	"github.com/alexj11324/open-jev-approvals/internal/contracts"
+	installer "github.com/alexj11324/open-jev-approvals/internal/install"
+	"github.com/alexj11324/open-jev-approvals/internal/jev"
+	"github.com/alexj11324/open-jev-approvals/internal/policy"
+	"github.com/alexj11324/open-jev-approvals/internal/review"
+	"github.com/alexj11324/open-jev-approvals/internal/storage"
 )
 
 func main() {
-	if err := config.LoadDotEnv(".env"); err != nil {
+	if err := config.LoadUserEnv(); err != nil {
 		fmt.Fprintln(os.Stderr, "jev-approve:", err)
+		// In hook paths a startup failure must still block the action.
+		if len(os.Args) > 1 && (os.Args[1] == "hook" || os.Args[1] == "event") {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 	code, err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
@@ -54,7 +58,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) 
 	}
 }
 
+// hookDeadline budgets the whole interception from process entry so a slow
+// environment cannot push the JEV call past the harness's hook timeout.
+const hookDeadline = 8 * time.Second
+
 func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), hookDeadline)
+	defer cancel()
+
 	flags := flag.NewFlagSet("hook", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	harnessValue := flags.String("harness", "", "codex or claude-code")
@@ -79,9 +90,12 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, err
 		return 2, err
 	}
 	defer store.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	action.UserMessages, err = store.UserPrompts(ctx, action.SessionID, action.TurnID)
+	installationID, err := store.InstallationID(ctx)
+	if err != nil {
+		return 2, fmt.Errorf("resolve installation id: %w", err)
+	}
+	action.Scope = storage.ScopeKey(installationID, harness, action.SessionID, action.AgentID)
+	action.UserMessages, action.AuthorizationVersion, err = store.UserPrompts(ctx, action.Scope, action.TurnID)
 	if err != nil {
 		return 2, fmt.Errorf("load user authorization: %w", err)
 	}
@@ -142,13 +156,17 @@ func writeRequiredHookJSON(stdout, stderr io.Writer, value any) (int, error) {
 }
 
 func runEvent(args []string, stdin io.Reader) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), hookDeadline)
+	defer cancel()
+
 	flags := flag.NewFlagSet("event", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	harnessValue := flags.String("harness", "", "codex or claude-code")
 	if err := flags.Parse(args); err != nil {
 		return 2, err
 	}
-	if _, err := parseHarness(*harnessValue); err != nil {
+	harness, err := parseHarness(*harnessValue)
+	if err != nil {
 		return 2, err
 	}
 	raw, err := io.ReadAll(io.LimitReader(stdin, 1<<20))
@@ -159,6 +177,7 @@ func runEvent(args []string, stdin io.Reader) (int, error) {
 		HookEventName string `json:"hook_event_name"`
 		SessionID     string `json:"session_id"`
 		TurnID        string `json:"turn_id"`
+		AgentID       string `json:"agent_id"`
 		Prompt        string `json:"prompt"`
 		UserPrompt    string `json:"user_prompt"`
 	}
@@ -177,7 +196,12 @@ func runEvent(args []string, stdin io.Reader) (int, error) {
 		return 2, err
 	}
 	defer store.Close()
-	if err := store.RememberPrompt(context.Background(), event.SessionID, event.TurnID, prompt); err != nil {
+	installationID, err := store.InstallationID(ctx)
+	if err != nil {
+		return 2, fmt.Errorf("resolve installation id: %w", err)
+	}
+	scope := storage.ScopeKey(installationID, harness, event.SessionID, event.AgentID)
+	if err := store.RememberPrompt(ctx, scope, event.SessionID, event.TurnID, prompt); err != nil {
 		return 2, err
 	}
 	return 0, nil

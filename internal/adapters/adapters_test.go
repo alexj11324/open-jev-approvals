@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/alexjiang/open-jev-approvals/internal/contracts"
+	"github.com/alexj11324/open-jev-approvals/internal/contracts"
 )
 
 func TestNormalizeCodexBash(t *testing.T) {

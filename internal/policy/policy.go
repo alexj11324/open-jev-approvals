@@ -4,8 +4,25 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/alexjiang/open-jev-approvals/internal/contracts"
+	"github.com/alexj11324/open-jev-approvals/internal/contracts"
 )
+
+// Version identifies the active policy document. Every recorded decision
+// carries it so an allow can be traced back to the exact rule set.
+const Version = "codex-guardian-v1"
+
+// Document returns the policy definition that is sent to JEV with each
+// review. The executable source of truth lives in this package.
+func Document() map[string]any {
+	thresholds := DefaultThresholds()
+	return map[string]any{
+		"version": Version,
+		"summary": "Fail-closed binary approval policy: confirmed hazards, missing or uncertain safety judgments deny; a bounded low-or-medium-risk action with adequate authorization allows.",
+		"thresholds": map[string]float64{
+			"action_probability": thresholds.ActionProbability,
+		},
+	}
+}
 
 type Thresholds struct {
 	ActionProbability float64
@@ -71,11 +88,11 @@ func Compose(assessment contracts.Assessment, thresholds Thresholds) contracts.D
 		}
 	}
 
-	return contracts.Decision{Outcome: contracts.DecisionAllow, Reason: "JEV assessment satisfies the source-derived Guardian policy"}
+	return contracts.Decision{Outcome: contracts.DecisionAllow, Reason: "JEV assessment satisfies the source-derived Guardian policy", PolicyVersion: Version}
 }
 
 func validProbability(value float64) bool { return !math.IsNaN(value) && value >= 0 && value <= 1 }
 
 func deny(reason string) contracts.Decision {
-	return contracts.Decision{Outcome: contracts.DecisionDeny, Reason: reason}
+	return contracts.Decision{Outcome: contracts.DecisionDeny, Reason: reason, PolicyVersion: Version}
 }

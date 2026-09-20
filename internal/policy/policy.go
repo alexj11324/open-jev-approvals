@@ -29,13 +29,17 @@ func Compose(assessment contracts.Assessment, thresholds Thresholds) contracts.D
 	if !validProbability(assessment.RiskConfidence) || !validProbability(assessment.AuthorizationConf) {
 		return review("JEV returned an invalid Choice confidence")
 	}
-	for _, id := range []string{"violates_explicit_constraint", "credential_probing", "persistent_security_weakening"} {
+	hardHazards := []string{"violates_explicit_constraint", "credential_probing", "persistent_security_weakening"}
+	for _, id := range hardHazards {
+		value, ok := assessment.Noul[id]
+		if ok && validProbability(value) && value >= thresholds.ActionProbability {
+			return deny(fmt.Sprintf("JEV identified %s", id))
+		}
+	}
+	for _, id := range hardHazards {
 		value, ok := assessment.Noul[id]
 		if !ok || !validProbability(value) {
 			return review(fmt.Sprintf("JEV did not return a valid %s judgment", id))
-		}
-		if value >= thresholds.ActionProbability {
-			return deny(fmt.Sprintf("JEV identified %s", id))
 		}
 		if value >= thresholds.ReviewProbability {
 			return review(fmt.Sprintf("JEV is uncertain about %s", id))
